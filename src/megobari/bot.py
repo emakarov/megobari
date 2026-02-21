@@ -11,7 +11,7 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from megobari.claude_bridge import send_to_claude
-from megobari.config import ALLOWED_USER_ID, ALLOWED_USERNAME, BOT_TOKEN
+from megobari.config import Config
 from megobari.formatting import Formatter, TelegramFormatter
 from megobari.message_utils import (
     format_help,
@@ -456,15 +456,15 @@ async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
-def create_application(session_manager: SessionManager) -> Application:
+def create_application(session_manager: SessionManager, config: Config) -> Application:
     """Create and configure the Telegram application with command handlers."""
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(config.bot_token).build()
     app.bot_data["session_manager"] = session_manager
 
-    if ALLOWED_USER_ID is not None:
-        user_filter = filters.User(user_id=ALLOWED_USER_ID)
-    elif ALLOWED_USERNAME is not None:
-        user_filter = filters.User(username=ALLOWED_USERNAME)
+    if config.allowed_user_id is not None:
+        user_filter = filters.User(user_id=config.allowed_user_id)
+    elif config.allowed_username is not None:
+        user_filter = filters.User(username=config.allowed_username)
     else:
         logger.warning("ALLOWED_USER not set — running in ID discovery mode.")
         app.add_handler(MessageHandler(filters.ALL, _cmd_discover_id))

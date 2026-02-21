@@ -12,34 +12,69 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 - **Permission modes** — `default`, `acceptEdits`, `bypassPermissions` per session
 - **Rich Telegram formatting** — HTML-formatted tool summaries, session info, help
 - **Client-agnostic formatting** — `Formatter` abstraction for future non-Telegram frontends
+- **Library API** — embed Megobari in your own Python project
 - **Plugin marketplace** — curated collection of Claude Code skills and MCP integrations
 
-## Prerequisites
+## Installation
+
+```bash
+pip install megobari
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/emakarov/megobari
+cd megobari
+uv sync
+```
+
+### Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated (`claude auth login`)
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-## Setup
+## Quick start
+
+### Option 1: Environment variables
 
 ```bash
-# Clone and install
-git clone <repo-url>
-cd megobari
-uv sync
-
-# Configure
-cp .env.example .env
-# Edit .env with your bot token and Telegram user ID/username
+export BOT_TOKEN="your-bot-token"
+export ALLOWED_USER="your-telegram-id"   # or @username
+megobari
 ```
 
-### Environment variables
+Or use a `.env` file:
 
-| Variable | Description |
-|---|---|
-| `BOT_TOKEN` | Telegram bot token from @BotFather |
-| `ALLOWED_USER` | Your Telegram numeric user ID or `@username` |
+```bash
+cp .env.example .env   # edit with your values
+megobari
+```
+
+### Option 2: CLI arguments
+
+```bash
+megobari --bot-token="your-bot-token" --allowed-user="12345"
+megobari --bot-token="your-bot-token" --allowed-user="@username" --cwd /path/to/project
+```
+
+### Option 3: Library API
+
+```python
+from megobari import MegobariBot
+
+bot = MegobariBot(
+    bot_token="your-bot-token",
+    allowed_user="12345",           # user ID or @username
+    working_dir="/path/to/project", # optional
+)
+bot.run()
+```
+
+### Configuration priority
+
+Arguments override environment variables, which override `.env` file values.
 
 To find your Telegram user ID, start the bot without `ALLOWED_USER` set — it will reply with your ID.
 

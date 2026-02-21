@@ -798,35 +798,32 @@ class TestCmdDiscoverId:
 
 
 class TestCreateApplication:
-    @patch("megobari.bot.ALLOWED_USER_ID", 12345)
-    @patch("megobari.bot.ALLOWED_USERNAME", None)
-    @patch("megobari.bot.BOT_TOKEN", "fake-token")
     def test_creates_with_user_id(self, session_manager):
         from megobari.bot import create_application
+        from megobari.config import Config
 
-        app = create_application(session_manager)
+        config = Config(bot_token="fake-token", allowed_user_id=12345)
+        app = create_application(session_manager, config)
         assert app is not None
         assert app.bot_data["session_manager"] is session_manager
         # Should have handlers registered
         assert len(app.handlers[0]) > 0
 
-    @patch("megobari.bot.ALLOWED_USER_ID", None)
-    @patch("megobari.bot.ALLOWED_USERNAME", "testuser")
-    @patch("megobari.bot.BOT_TOKEN", "fake-token")
     def test_creates_with_username(self, session_manager):
         from megobari.bot import create_application
+        from megobari.config import Config
 
-        app = create_application(session_manager)
+        config = Config(bot_token="fake-token", allowed_username="testuser")
+        app = create_application(session_manager, config)
         assert app is not None
         assert len(app.handlers[0]) > 0
 
-    @patch("megobari.bot.ALLOWED_USER_ID", None)
-    @patch("megobari.bot.ALLOWED_USERNAME", None)
-    @patch("megobari.bot.BOT_TOKEN", "fake-token")
     def test_discovery_mode(self, session_manager):
         from megobari.bot import create_application
+        from megobari.config import Config
 
-        app = create_application(session_manager)
+        config = Config(bot_token="fake-token")
+        app = create_application(session_manager, config)
         assert app is not None
         # In discovery mode, should have exactly 1 handler (catch-all)
         assert len(app.handlers[0]) == 1
