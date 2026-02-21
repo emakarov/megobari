@@ -38,6 +38,7 @@ test = [
 dev = [
     {include-group = "lint"},
     {include-group = "test"},
+    "watchfiles>=1.1.1",
 ]
 
 # -- Tool configs --

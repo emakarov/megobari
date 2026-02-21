@@ -43,8 +43,18 @@ To find your Telegram user ID, start the bot without `ALLOWED_USER` set — it w
 ## Usage
 
 ```bash
-# Run the bot
-uv run megobari
+# Run once
+./run.sh once
+
+# Auto-restart on .py file changes (dev mode)
+./run.sh watch
+
+# Auto-restart on git commit (set up hook first)
+./run.sh install-hook
+./run.sh hook
+
+# Stop the running bot
+./run.sh stop
 ```
 
 ### Commands
