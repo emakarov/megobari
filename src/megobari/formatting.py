@@ -1,3 +1,5 @@
+"""Client-agnostic text formatting abstraction."""
+
 from __future__ import annotations
 
 import html as html_lib

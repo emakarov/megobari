@@ -1,3 +1,5 @@
+"""Environment configuration loaded from .env."""
+
 import os
 import sys
 from pathlib import Path

@@ -1,3 +1,5 @@
+"""Session management with JSON persistence."""
+
 from __future__ import annotations
 
 import json

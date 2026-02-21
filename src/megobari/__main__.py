@@ -1,3 +1,5 @@
+"""Entry point for the Megobari Telegram bot."""
+
 import logging
 
 from megobari.bot import create_application

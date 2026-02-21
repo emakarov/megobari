@@ -1,3 +1,5 @@
+"""Telegram bot handlers and application factory."""
+
 from __future__ import annotations
 
 import asyncio

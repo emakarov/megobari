@@ -1,3 +1,5 @@
+"""Claude Code Agent SDK integration layer."""
+
 from __future__ import annotations
 
 import logging
