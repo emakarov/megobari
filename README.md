@@ -1,6 +1,8 @@
-# Megobari
+# Megobari (მეგობარი)
 
-Personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com/en/docs/claude-code), giving you a mobile interface to Claude's coding capabilities.
+**Megobari** means "friend" in Georgian. The name was chosen by the author while living in Georgia and learning the language — a nod to the idea of having a helpful coding companion always at hand, right from your phone.
+
+A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com/en/docs/claude-code), giving you a mobile interface to Claude's coding capabilities.
 
 ## Features
 
@@ -150,7 +152,3 @@ Telegram  <-->  bot.py  <-->  claude_bridge.py  <-->  Claude Code CLI
 ```
 
 The `Formatter` abstraction decouples presentation from logic. Swap `TelegramFormatter` for another implementation to support Discord, Slack, CLI, etc.
-
-## Name
-
-**Megobari** (მეგობარი) is the Georgian word for "friend". The name reflects the idea of having a helpful companion always at hand — a coding friend you can reach from your phone through Telegram.
