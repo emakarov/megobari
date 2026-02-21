@@ -6,13 +6,7 @@ from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from megobari.claude_bridge import send_to_claude
 from megobari.config import ALLOWED_USER_ID, ALLOWED_USERNAME, BOT_TOKEN
@@ -24,7 +18,7 @@ from megobari.message_utils import (
     format_tool_summary,
     split_message,
 )
-from megobari.session import SessionManager, VALID_PERMISSION_MODES
+from megobari.session import VALID_PERMISSION_MODES, SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +42,7 @@ def _reply(update: Update, text: str, formatted: bool = False):
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command."""
     sm = _get_sm(context)
     if not sm.list_all():
         sm.create("default")
@@ -60,6 +55,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /new command to create a new session."""
     if not context.args:
         await _reply(update, "Usage: /new <name>")
         return
@@ -73,12 +69,14 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /sessions command to list all sessions."""
     sm = _get_sm(context)
     text = format_session_list(sm.list_all(), sm.active_name, fmt)
     await _reply(update, text, formatted=True)
 
 
 async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /switch command to switch to a session."""
     if not context.args:
         await _reply(update, "Usage: /switch <name>")
         return
@@ -92,6 +90,7 @@ async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /delete command to delete a session."""
     if not context.args:
         await _reply(update, "Usage: /delete <name>")
         return
@@ -111,6 +110,7 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_stream(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /stream command to enable/disable streaming responses."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -131,6 +131,7 @@ async def cmd_stream(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /permissions command to set session permission mode."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -153,6 +154,7 @@ async def cmd_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /cd command to change the working directory."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -172,6 +174,7 @@ async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /dirs command to manage session directories."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -225,6 +228,7 @@ async def cmd_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /rename command to rename a session."""
     if not context.args or len(context.args) < 2:
         await _reply(update, "Usage: /rename <old_name> <new_name>")
         return
@@ -238,10 +242,12 @@ async def cmd_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /help command to display help text."""
     await _reply(update, format_help(fmt), formatted=True)
 
 
 async def cmd_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /current command to display active session info."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -263,6 +269,8 @@ async def _send_typing_periodically(chat_id: int, bot) -> None:
 
 
 class StreamingAccumulator:
+    """Accumulates streamed text chunks and edits a single Telegram message."""
+
     def __init__(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self.update = update
         self.context = context
@@ -272,9 +280,11 @@ class StreamingAccumulator:
         self.edit_threshold = 200
 
     async def initialize(self):
+        """Send initial placeholder message."""
         self.message = await self.update.message.reply_text("...")
 
     async def on_chunk(self, text: str) -> None:
+        """Accumulate text chunk and update message if threshold reached."""
         self.accumulated += text
         if len(self.accumulated) - self.last_edit_len >= self.edit_threshold:
             await self._do_edit()
@@ -288,6 +298,7 @@ class StreamingAccumulator:
             pass  # ignore edit failures (e.g., text unchanged)
 
     async def finalize(self) -> str:
+        """Finalize streaming and return accumulated text."""
         if self.accumulated and self.message:
             if len(self.accumulated) <= 4096:
                 await self._do_edit()
@@ -300,6 +311,7 @@ class StreamingAccumulator:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming text messages and send to Claude."""
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -389,6 +401,7 @@ async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def create_application(session_manager: SessionManager) -> Application:
+    """Create and configure the Telegram application with command handlers."""
     app = Application.builder().token(BOT_TOKEN).build()
     app.bot_data["session_manager"] = session_manager
 

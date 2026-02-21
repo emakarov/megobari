@@ -6,6 +6,7 @@ from megobari.session import SessionManager
 
 
 def main():
+    """Initialize and start the Telegram bot."""
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,

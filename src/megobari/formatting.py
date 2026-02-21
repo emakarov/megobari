@@ -19,10 +19,14 @@ class Formatter(ABC):
         ...
 
     @abstractmethod
-    def bold(self, text: str) -> str: ...
+    def bold(self, text: str) -> str:
+        """Return text formatted as bold."""
+        ...
 
     @abstractmethod
-    def italic(self, text: str) -> str: ...
+    def italic(self, text: str) -> str:
+        """Return text formatted as italic."""
+        ...
 
     @abstractmethod
     def code(self, text: str) -> str:
@@ -45,21 +49,27 @@ class TelegramFormatter(Formatter):
 
     @property
     def parse_mode(self) -> str:
+        """Return Telegram parse mode."""
         return "HTML"
 
     def bold(self, text: str) -> str:
+        """Return text wrapped in HTML bold tags."""
         return f"<b>{text}</b>"
 
     def italic(self, text: str) -> str:
+        """Return text wrapped in HTML italic tags."""
         return f"<i>{text}</i>"
 
     def code(self, text: str) -> str:
+        """Return text wrapped in HTML code tags."""
         return f"<code>{html_lib.escape(text)}</code>"
 
     def pre(self, text: str) -> str:
+        """Return text wrapped in HTML pre tags."""
         return f"<pre>{html_lib.escape(text)}</pre>"
 
     def escape(self, text: str) -> str:
+        """Return text with HTML entities escaped."""
         return html_lib.escape(text)
 
 
@@ -68,19 +78,25 @@ class PlainTextFormatter(Formatter):
 
     @property
     def parse_mode(self) -> str | None:
+        """Return None as plain text has no parse mode."""
         return None
 
     def bold(self, text: str) -> str:
+        """Return text unmodified."""
         return text
 
     def italic(self, text: str) -> str:
+        """Return text unmodified."""
         return text
 
     def code(self, text: str) -> str:
+        """Return text unmodified."""
         return text
 
     def pre(self, text: str) -> str:
+        """Return text unmodified."""
         return text
 
     def escape(self, text: str) -> str:
+        """Return text unmodified."""
         return text

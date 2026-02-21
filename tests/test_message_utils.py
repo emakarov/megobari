@@ -1,0 +1,132 @@
+"""Tests for message formatting utilities."""
+
+from __future__ import annotations
+
+from megobari.formatting import PlainTextFormatter, TelegramFormatter
+from megobari.message_utils import (
+    format_help,
+    format_session_info,
+    format_session_list,
+    format_tool_summary,
+    split_message,
+)
+from megobari.session import Session
+
+
+class TestSplitMessage:
+    def test_empty(self):
+        assert split_message("") == ["(empty response)"]
+
+    def test_short(self):
+        assert split_message("hello") == ["hello"]
+
+    def test_exact_limit(self):
+        text = "a" * 4096
+        assert split_message(text) == [text]
+
+    def test_splits_at_paragraph(self):
+        text = "a" * 2000 + "\n\n" + "b" * 2000
+        chunks = split_message(text, max_length=4096)
+        assert len(chunks) >= 1
+        assert "".join(chunks).replace("\n", "") == "a" * 2000 + "b" * 2000
+
+    def test_splits_long_text(self):
+        text = " ".join(["word"] * 2000)
+        chunks = split_message(text, max_length=100)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert len(chunk) <= 100
+
+
+class TestFormatSessionInfo:
+    def test_plain(self):
+        s = Session(name="test", cwd="/tmp")
+        text = format_session_info(s)
+        assert "test" in text
+        assert "/tmp" in text
+        assert "Streaming:" in text
+
+    def test_html(self):
+        s = Session(name="test", cwd="/tmp")
+        fmt = TelegramFormatter()
+        text = format_session_info(s, fmt)
+        assert "<b>" in text
+
+    def test_shows_extra_dirs(self):
+        s = Session(name="test", cwd="/tmp", dirs=["/a", "/b"])
+        text = format_session_info(s)
+        assert "2" in text
+        assert "/dirs" in text
+
+
+class TestFormatSessionList:
+    def test_empty(self):
+        text = format_session_list([], None)
+        assert "No sessions" in text
+
+    def test_marks_active(self):
+        sessions = [Session(name="a"), Session(name="b")]
+        fmt = PlainTextFormatter()
+        text = format_session_list(sessions, "a", fmt)
+        lines = text.split("\n")
+        assert any("▸" in line and "a" in line for line in lines)
+
+    def test_shows_stream_flag(self):
+        sessions = [Session(name="s", streaming=True)]
+        text = format_session_list(sessions, "s")
+        assert "stream" in text
+
+
+class TestFormatToolSummary:
+    def test_bash_grouped(self):
+        tools = [
+            ("Bash", {"command": "git status"}),
+            ("Bash", {"command": "git diff"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "⚡" in text
+        assert "git status" in text
+        assert "git diff" in text
+        # Should be single line for Bash
+        assert text.count("⚡") == 1
+
+    def test_edit_deduplication(self):
+        tools = [
+            ("Edit", {"file_path": "/a/b/foo.py"}),
+            ("Edit", {"file_path": "/a/b/foo.py"}),
+            ("Edit", {"file_path": "/a/b/bar.py"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "foo.py" in text
+        assert "×2" in text
+        assert "bar.py" in text
+
+    def test_unknown_tool(self):
+        tools = [("TodoWrite", {}), ("TodoWrite", {})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "TodoWrite" in text
+        assert "×2" in text
+
+    def test_html_formatting(self):
+        tools = [("Bash", {"command": "ls"})]
+        fmt = TelegramFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "<code>" in text
+
+
+class TestFormatHelp:
+    def test_plain(self):
+        text = format_help()
+        assert "/new" in text
+        assert "/help" in text
+        assert "/dirs" in text
+        assert "/cd" in text
+
+    def test_html(self):
+        fmt = TelegramFormatter()
+        text = format_help(fmt)
+        assert "<b>" in text
+        assert "<code>" in text

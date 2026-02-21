@@ -9,6 +9,7 @@ from megobari.session import Session
 
 
 def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LEN) -> list[str]:
+    """Split a message into chunks that fit within max_length."""
     if not text:
         return ["(empty response)"]
     if len(text) <= max_length:
@@ -45,6 +46,7 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LEN) -> list
 def format_session_info(
     session: Session, fmt: Formatter | None = None
 ) -> str:
+    """Format session details as a multi-line string."""
     if fmt is None:
         fmt = PlainTextFormatter()
 
@@ -72,6 +74,7 @@ def format_session_list(
     active_name: str | None,
     fmt: Formatter | None = None,
 ) -> str:
+    """Format a list of sessions with the active session marked."""
     if fmt is None:
         fmt = PlainTextFormatter()
 
@@ -94,6 +97,7 @@ def format_session_list(
 
 
 def format_help(fmt: Formatter | None = None) -> str:
+    """Format the help text listing all available commands."""
     if fmt is None:
         fmt = PlainTextFormatter()
 

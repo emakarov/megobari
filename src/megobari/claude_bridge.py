@@ -5,9 +5,9 @@ from collections.abc import Awaitable, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
     CLIConnectionError,
     CLINotFoundError,
-    ClaudeAgentOptions,
     ProcessError,
     ResultMessage,
     SystemMessage,
@@ -45,10 +45,12 @@ def _build_system_prompt(session: Session) -> str:
 
 
 def _patch_message_parser() -> None:
-    """Patch the SDK message parser to handle unknown message types
-    (e.g., rate_limit_event) gracefully instead of crashing."""
-    import claude_agent_sdk._internal.message_parser as mp
+    """Patch the SDK message parser to handle unknown message types.
+
+    Handles events like rate_limit_event gracefully instead of crashing.
+    """
     import claude_agent_sdk._internal.client as internal_client
+    import claude_agent_sdk._internal.message_parser as mp
 
     _original_parse = mp.parse_message
 

@@ -18,6 +18,7 @@ _LAUNCH_DIR = os.getcwd()
 
 @dataclass
 class Session:
+    """Represents a single Claude Code session with configuration and metadata."""
     name: str
     session_id: str | None = None
     streaming: bool = False
@@ -28,6 +29,7 @@ class Session:
     last_used_at: str = field(default_factory=lambda: _now_iso())
 
     def touch(self) -> None:
+        """Update the last_used_at timestamp to the current time."""
         self.last_used_at = _now_iso()
 
 
@@ -36,6 +38,7 @@ def _now_iso() -> str:
 
 
 class SessionManager:
+    """Manages Claude Code sessions with persistence and switching capabilities."""
     def __init__(self, sessions_dir: Path) -> None:
         self._sessions: dict[str, Session] = {}
         self._active_name: str | None = None
@@ -43,15 +46,18 @@ class SessionManager:
 
     @property
     def current(self) -> Session | None:
+        """Return the currently active session, or None if no session is active."""
         if self._active_name is None:
             return None
         return self._sessions.get(self._active_name)
 
     @property
     def active_name(self) -> str | None:
+        """Return the name of the currently active session, or None if no session is active."""
         return self._active_name
 
     def create(self, name: str) -> Session | None:
+        """Create a new session with the given name. Returns None if the name already exists."""
         if name in self._sessions:
             return None
         session = Session(name=name)
@@ -61,9 +67,14 @@ class SessionManager:
         return session
 
     def get(self, name: str) -> Session | None:
+        """Retrieve a session by name, or None if it does not exist."""
         return self._sessions.get(name)
 
     def delete(self, name: str) -> bool:
+        """Delete a session by name.
+
+        Returns True on success, False if not found.
+        """
         if name not in self._sessions:
             return False
         del self._sessions[name]
@@ -74,9 +85,14 @@ class SessionManager:
         return True
 
     def list_all(self) -> list[Session]:
+        """Return a list of all sessions."""
         return list(self._sessions.values())
 
     def switch(self, name: str) -> Session | None:
+        """Switch the active session to the given name.
+
+        Returns the session or None if not found.
+        """
         session = self._sessions.get(name)
         if session is None:
             return None
@@ -99,6 +115,7 @@ class SessionManager:
         return None
 
     def update_session_id(self, name: str, session_id: str) -> None:
+        """Update the session_id for a session and touch its last_used_at timestamp."""
         session = self._sessions.get(name)
         if session:
             session.session_id = session_id
@@ -117,6 +134,7 @@ class SessionManager:
         path.write_text(json.dumps(data, indent=2))
 
     def load_from_disk(self) -> None:
+        """Load sessions from the sessions.json file on disk."""
         path = self._sessions_dir / "sessions.json"
         if not path.exists():
             logger.info("No sessions file found, starting fresh.")
