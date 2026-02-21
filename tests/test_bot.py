@@ -500,6 +500,80 @@ class TestCmdRename:
         assert "not found" in text
 
 
+class TestCmdFile:
+    async def test_send_file(self, session_manager, tmp_path):
+        from megobari.bot import cmd_file
+
+        session_manager.create("s")
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        update = _make_update()
+        update.message.reply_document = AsyncMock()
+        ctx = _make_context(session_manager, args=[str(f)])
+
+        await cmd_file(update, ctx)
+
+        update.message.reply_document.assert_called_once()
+        call_kwargs = update.message.reply_document.call_args[1]
+        assert call_kwargs["filename"] == "test.txt"
+
+    async def test_no_args(self, session_manager):
+        from megobari.bot import cmd_file
+
+        session_manager.create("s")
+        update = _make_update()
+        ctx = _make_context(session_manager, args=[])
+
+        await cmd_file(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_file_not_found(self, session_manager):
+        from megobari.bot import cmd_file
+
+        session_manager.create("s")
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["/nonexistent/file.txt"])
+
+        await cmd_file(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_relative_path_resolved_from_cwd(self, session_manager, tmp_path):
+        from megobari.bot import cmd_file
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        f = tmp_path / "data.pdf"
+        f.write_text("pdf content")
+        update = _make_update()
+        update.message.reply_document = AsyncMock()
+        ctx = _make_context(session_manager, args=["data.pdf"])
+
+        await cmd_file(update, ctx)
+
+        update.message.reply_document.assert_called_once()
+
+    async def test_send_failure(self, session_manager, tmp_path):
+        from megobari.bot import cmd_file
+
+        session_manager.create("s")
+        f = tmp_path / "fail.txt"
+        f.write_text("data")
+        update = _make_update()
+        update.message.reply_document = AsyncMock(
+            side_effect=Exception("too large")
+        )
+        ctx = _make_context(session_manager, args=[str(f)])
+
+        await cmd_file(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed to send" in text
+
+
 class TestCmdHelp:
     async def test_help(self, session_manager):
         from megobari.bot import cmd_help
@@ -764,6 +838,179 @@ class TestHandleMessageStreaming:
         await handle_message(update, ctx)
 
         assert session_manager.get("s").session_id is None
+
+    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    async def test_streaming_action_blocks(
+        self, mock_exec, mock_send, session_manager
+    ):
+        from megobari.bot import handle_message
+
+        response_with_action = (
+            "Here is the file:\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/test.pdf"}\n'
+            "```\n"
+            "Enjoy!"
+        )
+
+        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+            if on_text_chunk:
+                await on_text_chunk(response_with_action)
+            return (response_with_action, [], "sid-s")
+
+        mock_send.side_effect = fake_send
+        mock_exec.return_value = []
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        update.message.message_id = 99
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # execute_actions should have been called with parsed actions
+        mock_exec.assert_called_once()
+        actions_arg = mock_exec.call_args[0][0]
+        assert len(actions_arg) == 1
+        assert actions_arg[0]["action"] == "send_file"
+
+        # Streaming message should be re-edited with cleaned text
+        edit_calls = msg.edit_text.call_args_list
+        last_edit = edit_calls[-1][0][0]
+        assert "```megobari" not in last_edit
+
+    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    async def test_streaming_action_errors_reported(
+        self, mock_exec, mock_send, session_manager
+    ):
+        from megobari.bot import handle_message
+
+        response_with_action = (
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/x.pdf"}\n'
+            "```\n"
+            "Done."
+        )
+
+        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+            if on_text_chunk:
+                await on_text_chunk(response_with_action)
+            return (response_with_action, [], "sid-s")
+
+        mock_send.side_effect = fake_send
+        mock_exec.return_value = ["send_file: file not found: /tmp/x.pdf"]
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        update.message.message_id = 99
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # Error message should be sent
+        reply_calls = update.message.reply_text.call_args_list
+        any_error = any("⚠️" in str(c) for c in reply_calls)
+        assert any_error
+
+
+class TestHandleMessageActions:
+    """Test action protocol integration in non-streaming handle_message."""
+
+    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    async def test_non_streaming_action_blocks(
+        self, mock_exec, mock_send, session_manager
+    ):
+        from megobari.bot import handle_message
+
+        response_with_action = (
+            "Here is your file:\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/report.pdf"}\n'
+            "```\n"
+            "Let me know if you need more."
+        )
+        mock_send.return_value = (response_with_action, [], "sid-123")
+        mock_exec.return_value = []
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        mock_exec.assert_called_once()
+        actions_arg = mock_exec.call_args[0][0]
+        assert len(actions_arg) == 1
+        assert actions_arg[0]["action"] == "send_file"
+
+        # Response text sent to user should not contain the action block
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "```megobari" not in reply_text
+
+    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    async def test_non_streaming_action_errors(
+        self, mock_exec, mock_send, session_manager
+    ):
+        from megobari.bot import handle_message
+
+        response_with_action = (
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/nope.pdf"}\n'
+            "```\n"
+            "Here you go."
+        )
+        mock_send.return_value = (response_with_action, [], "sid-123")
+        mock_exec.return_value = ["send_file: file not found: /tmp/nope.pdf"]
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        reply_calls = update.message.reply_text.call_args_list
+        any_error = any("⚠️" in str(c) for c in reply_calls)
+        assert any_error
+
+    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    async def test_non_streaming_action_with_tools(
+        self, mock_exec, mock_send, session_manager
+    ):
+        from megobari.bot import handle_message
+
+        response_with_action = (
+            "Found the file.\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/data.csv"}\n'
+            "```"
+        )
+        mock_send.return_value = (
+            response_with_action,
+            [("Read", {"file_path": "/tmp/data.csv"})],
+            "sid-123",
+        )
+        mock_exec.return_value = []
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        mock_exec.assert_called_once()
+        # Tool summary should also be present in formatted reply
+        reply_calls = update.message.reply_text.call_args_list
+        any_tool = any("✏️" in str(c) for c in reply_calls)
+        assert any_tool
 
 
 class TestSendTypingPeriodically:

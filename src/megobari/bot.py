@@ -10,6 +10,7 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+from megobari.actions import execute_actions, parse_actions
 from megobari.claude_bridge import send_to_claude
 from megobari.config import Config
 from megobari.formatting import Formatter, TelegramFormatter
@@ -244,6 +245,30 @@ async def cmd_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply(update, f"Renamed '{old_name}' → '{new_name}'.")
 
 
+async def cmd_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /file command to send a file to the user."""
+    sm = _get_sm(context)
+    session = sm.current
+    if not context.args:
+        await _reply(update, "Usage: /file <path>")
+        return
+    raw_path = " ".join(context.args)
+    resolved = Path(raw_path).expanduser()
+    if not resolved.is_absolute() and session:
+        resolved = Path(session.cwd) / resolved
+    resolved = resolved.resolve()
+    if not resolved.is_file():
+        await _reply(update, f"File not found: {resolved}")
+        return
+    try:
+        await update.message.reply_document(
+            document=open(resolved, "rb"),
+            filename=resolved.name,
+        )
+    except Exception as e:
+        await _reply(update, f"Failed to send file: {e}")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command to display help text."""
     await _reply(update, format_help(fmt), formatted=True)
@@ -375,13 +400,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             full_text = await accumulator.finalize()
 
+            # Parse and execute action blocks
+            cleaned_text, actions = parse_actions(full_text)
+            if actions:
+                action_errors = await execute_actions(
+                    actions, context.bot, chat_id
+                )
+                for err in action_errors:
+                    await _reply(update, f"⚠️ {err}")
+
             # Send tool summary as a separate formatted message
             if tool_uses:
                 summary = format_tool_summary(tool_uses, fmt)
                 await _reply(update, summary, formatted=True)
 
-            # If text was too long for single message, send as splits
-            if len(full_text) > 4096:
+            # If streaming message was edited with full text including
+            # action blocks, re-edit with cleaned text
+            if actions and accumulator.message and cleaned_text:
+                if len(cleaned_text) <= 4096:
+                    try:
+                        await accumulator.message.edit_text(cleaned_text)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await accumulator.message.delete()
+                    except Exception:
+                        pass
+                    for chunk in split_message(cleaned_text):
+                        await _reply(update, chunk)
+            elif len(full_text) > 4096:
                 for chunk in split_message(full_text):
                     await _reply(update, chunk)
         else:
@@ -411,6 +459,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await status_msg.delete()
                 except Exception:
                     pass
+
+            # Parse and execute action blocks
+            cleaned_text, actions = parse_actions(response_text)
+            if actions:
+                action_errors = await execute_actions(
+                    actions, context.bot, chat_id
+                )
+                for err in action_errors:
+                    await _reply(update, f"⚠️ {err}")
+                response_text = cleaned_text
 
             if tool_uses:
                 summary = format_tool_summary(tool_uses, fmt)
@@ -478,6 +536,7 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("rename", cmd_rename, filters=user_filter))
     app.add_handler(CommandHandler("cd", cmd_cd, filters=user_filter))
     app.add_handler(CommandHandler("dirs", cmd_dirs, filters=user_filter))
+    app.add_handler(CommandHandler("file", cmd_file, filters=user_filter))
     app.add_handler(CommandHandler("help", cmd_help, filters=user_filter))
     app.add_handler(CommandHandler("stream", cmd_stream, filters=user_filter))
     app.add_handler(CommandHandler("permissions", cmd_permissions, filters=user_filter))

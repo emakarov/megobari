@@ -115,6 +115,7 @@ def format_help(fmt: Formatter | None = None) -> str:
         (f"/dirs {fmt.code('[add|rm] <path>')}", "Manage extra directories"),
         (f"/stream {fmt.code('on|off')}", "Toggle streaming"),
         (f"/permissions {fmt.code('<mode>')}", "Set permission mode"),
+        (f"/file {fmt.code('<path>')}", "Send a file to Telegram"),
         ("/help", "Show this message"),
     ]
     lines = [title, ""]

@@ -123,6 +123,7 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 | `/dirs [add\|rm] <path>` | Manage extra directories |
 | `/stream on\|off` | Toggle streaming responses |
 | `/permissions <mode>` | Set permission mode |
+| `/file <path>` | Send a file to Telegram |
 | `/help` | Show all commands |
 
 ### Permission modes

@@ -1,0 +1,256 @@
+"""Tests for the megobari action protocol."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+
+from megobari.actions import execute_actions, parse_actions
+
+# -- parse_actions tests --
+
+
+class TestParseActions:
+    def test_no_blocks(self):
+        text = "Hello, here is some regular text."
+        cleaned, actions = parse_actions(text)
+        assert cleaned == text
+        assert actions == []
+
+    def test_single_block(self):
+        text = (
+            "Here is a file:\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/test.pdf"}\n'
+            "```\n"
+            "Enjoy!"
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "send_file"
+        assert actions[0]["path"] == "/tmp/test.pdf"
+        assert "```megobari" not in cleaned
+        assert "Enjoy!" in cleaned
+
+    def test_multiple_blocks(self):
+        text = (
+            "Two files:\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/a.pdf"}\n'
+            "```\n"
+            "and\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/b.pdf"}\n'
+            "```\n"
+            "Done."
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 2
+        assert actions[0]["path"] == "/tmp/a.pdf"
+        assert actions[1]["path"] == "/tmp/b.pdf"
+        assert "```megobari" not in cleaned
+        assert "Done." in cleaned
+
+    def test_invalid_json_left_in_text(self):
+        text = (
+            "Bad block:\n"
+            "```megobari\n"
+            "this is not json\n"
+            "```\n"
+            "After."
+        )
+        cleaned, actions = parse_actions(text)
+        assert actions == []
+        assert "```megobari" in cleaned  # left as-is
+
+    def test_missing_action_key_left_in_text(self):
+        text = (
+            "```megobari\n"
+            '{"path": "/tmp/test.pdf"}\n'
+            "```"
+        )
+        cleaned, actions = parse_actions(text)
+        assert actions == []
+        assert "```megobari" in cleaned
+
+    def test_block_with_caption(self):
+        text = (
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/x.pdf", "caption": "Report"}\n'
+            "```"
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0]["caption"] == "Report"
+        assert cleaned == ""
+
+    def test_block_with_extra_whitespace(self):
+        text = (
+            "```megobari  \n"
+            '  {"action": "send_file", "path": "/tmp/x.pdf"}  \n'
+            "  ```"
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 1
+
+    def test_mixed_valid_and_invalid(self):
+        text = (
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/good.pdf"}\n'
+            "```\n"
+            "```megobari\n"
+            "broken json\n"
+            "```\n"
+            "End."
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0]["path"] == "/tmp/good.pdf"
+        # The invalid block stays in the text
+        assert "broken json" in cleaned
+
+    def test_empty_text(self):
+        cleaned, actions = parse_actions("")
+        assert cleaned == ""
+        assert actions == []
+
+    def test_cleans_extra_blank_lines(self):
+        text = (
+            "Before.\n\n\n"
+            "```megobari\n"
+            '{"action": "send_file", "path": "/tmp/x.pdf"}\n'
+            "```\n\n\n"
+            "After."
+        )
+        cleaned, actions = parse_actions(text)
+        assert len(actions) == 1
+        # Should not have 3+ consecutive newlines
+        assert "\n\n\n" not in cleaned
+
+
+# -- execute_actions tests --
+
+
+class TestExecuteActions:
+    @pytest.mark.asyncio
+    async def test_send_file_success(self, tmp_path):
+        f = tmp_path / "test.pdf"
+        f.write_bytes(b"PDF content")
+
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_file", "path": str(f)}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        bot.send_document.assert_called_once()
+        call_kwargs = bot.send_document.call_args[1]
+        assert call_kwargs["chat_id"] == 123
+        assert call_kwargs["filename"] == "test.pdf"
+
+    @pytest.mark.asyncio
+    async def test_send_file_with_caption(self, tmp_path):
+        f = tmp_path / "report.pdf"
+        f.write_bytes(b"data")
+
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_file", "path": str(f), "caption": "My report"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        call_kwargs = bot.send_document.call_args[1]
+        assert call_kwargs["caption"] == "My report"
+
+    @pytest.mark.asyncio
+    async def test_send_file_not_found(self):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_file", "path": "/nonexistent/file.pdf"}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "not found" in errors[0]
+        bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_file_missing_path(self):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_file"}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "missing" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_send_file_exception(self, tmp_path):
+        f = tmp_path / "test.pdf"
+        f.write_bytes(b"data")
+
+        bot = AsyncMock()
+        bot.send_document.side_effect = Exception("Telegram error")
+        errors = await execute_actions(
+            [{"action": "send_file", "path": str(f)}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "failed" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_unknown_action_ignored(self):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "unknown_thing", "data": "x"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_multiple_actions(self, tmp_path):
+        f1 = tmp_path / "a.pdf"
+        f1.write_bytes(b"a")
+        f2 = tmp_path / "b.pdf"
+        f2.write_bytes(b"b")
+
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [
+                {"action": "send_file", "path": str(f1)},
+                {"action": "send_file", "path": str(f2)},
+            ],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        assert bot.send_document.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_actions(self):
+        bot = AsyncMock()
+        errors = await execute_actions([], bot, chat_id=123)
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_tilde_expansion(self, tmp_path, monkeypatch):
+        f = tmp_path / "home_file.txt"
+        f.write_bytes(b"data")
+
+        # Patch expanduser to resolve ~ to tmp_path
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / self.name)
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_file", "path": "~/home_file.txt"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        bot.send_document.assert_called_once()

@@ -32,7 +32,15 @@ DISALLOWED_TOOLS = [
 _BASE_SYSTEM_PROMPT = (
     "You are being accessed through a non-interactive Telegram bot. "
     "Do NOT use AskUserQuestion, EnterPlanMode, or any interactive tools. "
-    "Just proceed with your best judgment. Keep responses concise."
+    "Just proceed with your best judgment. Keep responses concise.\n\n"
+    "When you need to send a file to the user, embed an action block in your "
+    "response:\n"
+    "```megobari\n"
+    '{"action": "send_file", "path": "/absolute/path/to/file.pdf"}\n'
+    "```\n"
+    "You can add an optional \"caption\" field. "
+    "The bot will send the file and strip the block from your message. "
+    "Use absolute paths only."
 )
 
 
