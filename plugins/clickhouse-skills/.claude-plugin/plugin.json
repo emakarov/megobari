@@ -1,0 +1,9 @@
+{
+  "name": "clickhouse-skills",
+  "version": "0.3.0",
+  "description": "ClickHouse best practices — 28 validated rules for schema design, query optimization, and data ingestion",
+  "author": {
+    "name": "ClickHouse Inc (curated by Megobari)",
+    "email": "megobari@example.com"
+  }
+}

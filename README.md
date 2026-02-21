@@ -12,6 +12,7 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 - **Permission modes** — `default`, `acceptEdits`, `bypassPermissions` per session
 - **Rich Telegram formatting** — HTML-formatted tool summaries, session info, help
 - **Client-agnostic formatting** — `Formatter` abstraction for future non-Telegram frontends
+- **Plugin marketplace** — curated collection of Claude Code skills and MCP integrations
 
 ## Prerequisites
 
@@ -100,6 +101,41 @@ Each session maintains its own:
 
 Session data is persisted to `.megobari/sessions/sessions.json`.
 
+## Plugin Marketplace
+
+Megobari doubles as a Claude Code plugin marketplace with a curated collection of skills and MCP integrations.
+
+### Install the marketplace
+
+```bash
+/plugin marketplace add https://github.com/<user>/megobari
+```
+
+### Available plugins
+
+| Plugin | Category | Description |
+|---|---|---|
+| `clickhouse-skills` | Database | 28 validated rules for ClickHouse schema design, queries, and ingestion |
+| `transit-data` | Development | GTFS public transit data analysis skills |
+
+### Install a plugin
+
+```bash
+/plugin install clickhouse-skills
+```
+
+### Structure
+
+```
+.claude-plugin/
+  marketplace.json         # Marketplace index
+plugins/
+  clickhouse-skills/       # ClickHouse best practices (28 rules)
+  transit-data/            # GTFS transit data analysis
+```
+
+See [REQ-002](requirements/002-skills-and-mcp-library.md) for the full design.
+
 ## Development
 
 ```bash
@@ -121,22 +157,21 @@ uv run pre-commit install
 ### Project structure
 
 ```
-run.sh                 # Bot launcher (watch / hook / once / stop)
+run.sh                     # Bot launcher (watch / hook / once / stop)
+.claude-plugin/
+  marketplace.json         # Plugin marketplace index
+plugins/                   # Curated skills and MCP configs
+  clickhouse-skills/
+  transit-data/
 src/megobari/
-  __main__.py          # Entry point
-  config.py            # Environment configuration
-  bot.py               # Telegram handlers
-  claude_bridge.py     # Agent SDK integration
-  session.py           # Session dataclass + manager
-  formatting.py        # Formatter ABC (Telegram HTML, plain text)
-  message_utils.py     # Message splitting, formatting helpers
+  __main__.py              # Entry point
+  config.py                # Environment configuration
+  bot.py                   # Telegram handlers
+  claude_bridge.py         # Agent SDK integration
+  session.py               # Session dataclass + manager
+  formatting.py            # Formatter ABC (Telegram HTML, plain text)
+  message_utils.py         # Message splitting, formatting helpers
 tests/
-  test_bot.py
-  test_claude_bridge.py
-  test_formatting.py
-  test_main.py
-  test_message_utils.py
-  test_session.py
 ```
 
 ## Architecture

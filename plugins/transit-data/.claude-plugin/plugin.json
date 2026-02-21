@@ -1,0 +1,9 @@
+{
+  "name": "transit-data",
+  "version": "0.1.0",
+  "description": "GTFS transit data analysis skills for public transportation feeds, routes, schedules, and service patterns",
+  "author": {
+    "name": "Megobari",
+    "email": "megobari@example.com"
+  }
+}
