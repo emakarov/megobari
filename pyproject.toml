@@ -68,7 +68,7 @@ addopts = [
     "--strict-markers",
     "--cov=megobari",
     "--cov-report=term-missing",
-    "--cov-fail-under=80",
+    "--cov-fail-under=95",
 ]
 
 [tool.coverage.run]

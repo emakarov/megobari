@@ -115,3 +115,46 @@ class TestSessionManager:
         assert s is not None
         assert s.session_id == "sid-abc"
         assert sm2.active_name == "persisted"
+
+    def test_load_from_disk_no_file(self, tmp_sessions_dir: Path):
+        sm = SessionManager(tmp_sessions_dir)
+        # Should not raise, just return with empty state
+        sm.load_from_disk()
+        assert sm.list_all() == []
+        assert sm.active_name is None
+
+    def test_load_from_disk_corrupt_json(self, tmp_sessions_dir: Path):
+        path = tmp_sessions_dir / "sessions.json"
+        path.write_text("not valid json {{{")
+        sm = SessionManager(tmp_sessions_dir)
+        # Should not raise, just log error
+        sm.load_from_disk()
+        assert sm.list_all() == []
+
+    def test_load_from_disk_invalid_structure(self, tmp_sessions_dir: Path):
+        import json
+        path = tmp_sessions_dir / "sessions.json"
+        path.write_text(json.dumps({"sessions": {"bad": "not a dict of session fields"}}))
+        sm = SessionManager(tmp_sessions_dir)
+        # Should handle gracefully
+        sm.load_from_disk()
+
+    def test_update_session_id_nonexistent(self, session_manager: SessionManager):
+        # Should not raise for nonexistent session
+        session_manager.update_session_id("nope", "sid-123")
+
+    def test_rename_inactive_session(self, session_manager: SessionManager):
+        session_manager.create("a")
+        session_manager.create("b")  # b is now active
+        err = session_manager.rename("a", "c")
+        assert err is None
+        assert session_manager.get("c") is not None
+        # Active session should still be b
+        assert session_manager.active_name == "b"
+
+    def test_get_nonexistent(self, session_manager: SessionManager):
+        assert session_manager.get("nope") is None
+
+    def test_current_none_initially(self, session_manager: SessionManager):
+        assert session_manager.current is None
+        assert session_manager.active_name is None

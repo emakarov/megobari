@@ -37,6 +37,20 @@ class TestSplitMessage:
         for chunk in chunks:
             assert len(chunk) <= 100
 
+    def test_hard_cut_no_separators(self):
+        # Single long word with no spaces or newlines — forces hard cut
+        text = "x" * 200
+        chunks = split_message(text, max_length=50)
+        assert len(chunks) > 1
+        assert chunks[0] == "x" * 50
+
+    def test_splits_at_newline(self):
+        # Text with single newlines but no double newlines
+        text = "a" * 40 + "\n" + "b" * 40
+        chunks = split_message(text, max_length=50)
+        assert len(chunks) == 2
+        assert chunks[0] == "a" * 40
+
 
 class TestFormatSessionInfo:
     def test_plain(self):
@@ -110,11 +124,101 @@ class TestFormatToolSummary:
         assert "TodoWrite" in text
         assert "×2" in text
 
+    def test_unknown_tool_single(self):
+        tools = [("TodoWrite", {})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "TodoWrite" in text
+        assert "×" not in text
+
     def test_html_formatting(self):
         tools = [("Bash", {"command": "ls"})]
         fmt = TelegramFormatter()
         text = format_tool_summary(tools, fmt)
         assert "<code>" in text
+
+    def test_glob_tool(self):
+        tools = [("Glob", {"pattern": "**/*.py"})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "🔍" in text
+        assert "Glob" in text
+        assert "**/*.py" in text
+
+    def test_grep_tool(self):
+        tools = [
+            ("Grep", {"pattern": "TODO"}),
+            ("Grep", {"pattern": "FIXME"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "🔍" in text
+        assert "TODO" in text
+        assert "FIXME" in text
+
+    def test_websearch_tool(self):
+        tools = [("WebSearch", {"query": "python docs"})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "🌐" in text
+        assert "Search" in text
+        assert "python docs" in text
+
+    def test_webfetch_single(self):
+        tools = [("WebFetch", {"url": "https://example.com"})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "🌐" in text
+        assert "Fetch" in text
+        assert "×" not in text
+
+    def test_webfetch_multiple(self):
+        tools = [
+            ("WebFetch", {"url": "https://a.com"}),
+            ("WebFetch", {"url": "https://b.com"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "Fetch" in text
+        assert "×2" in text
+
+    def test_read_write_tools(self):
+        tools = [
+            ("Read", {"file_path": "/a/b/file.py"}),
+            ("Write", {"file_path": "/c/d/out.txt"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "✏️" in text
+        assert "file.py" in text
+        assert "out.txt" in text
+
+    def test_bash_long_command_truncated(self):
+        long_cmd = "x" * 100
+        tools = [("Bash", {"command": long_cmd})]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "..." in text
+        assert len(text) < len(long_cmd) + 20
+
+    def test_mixed_tools(self):
+        tools = [
+            ("Bash", {"command": "ls"}),
+            ("Read", {"file_path": "/a/foo.py"}),
+            ("Glob", {"pattern": "*.md"}),
+            ("WebSearch", {"query": "test"}),
+        ]
+        fmt = PlainTextFormatter()
+        text = format_tool_summary(tools, fmt)
+        assert "⚡" in text
+        assert "✏️" in text
+        assert "🔍" in text
+        assert "🌐" in text
+
+    def test_default_formatter(self):
+        tools = [("Bash", {"command": "echo hi"})]
+        text = format_tool_summary(tools)
+        assert "echo hi" in text
 
 
 class TestFormatHelp:

@@ -169,6 +169,17 @@ class TestCmdDelete:
         text = update.message.reply_text.call_args[0][0]
         assert "not found" in text
 
+    async def test_no_args(self, session_manager):
+        from megobari.bot import cmd_delete
+
+        update = _make_update()
+        ctx = _make_context(session_manager, args=[])
+
+        await cmd_delete(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
 
 class TestCmdSessions:
     async def test_list(self, session_manager):
@@ -327,6 +338,22 @@ class TestCmdDirs:
         await cmd_dirs(update, ctx)
 
         update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "No extra directories" in text
+
+    async def test_list_with_dirs(self, session_manager, tmp_path):
+        from megobari.bot import cmd_dirs
+
+        session_manager.create("s")
+        session_manager.get("s").dirs.append(str(tmp_path))
+        update = _make_update()
+        ctx = _make_context(session_manager, args=[])
+
+        await cmd_dirs(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert str(tmp_path) in text
+        assert "Directories" in text
 
     async def test_add_dir(self, session_manager, tmp_path):
         from megobari.bot import cmd_dirs
@@ -582,6 +609,157 @@ class TestHandleMessage:
         assert "Something went wrong" in text
 
 
+class TestHandleMessageStreaming:
+    @patch("megobari.bot.send_to_claude")
+    async def test_streaming_basic(self, mock_send, session_manager):
+        from megobari.bot import handle_message
+
+        mock_send.return_value = ("Streamed!", [], "sid-s")
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        mock_send.assert_called_once()
+        # on_text_chunk callback should have been passed
+        call_kwargs = mock_send.call_args[1]
+        assert "on_text_chunk" in call_kwargs
+
+    @patch("megobari.bot.send_to_claude")
+    async def test_streaming_with_tools(self, mock_send, session_manager):
+        from megobari.bot import handle_message
+
+        mock_send.return_value = (
+            "Done!",
+            [("Bash", {"command": "ls"})],
+            "sid-s",
+        )
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # Tool summary should be sent
+        calls = update.message.reply_text.call_args_list
+        any_tool_call = any("⚡" in str(c) for c in calls)
+        assert any_tool_call
+
+    @patch("megobari.bot.send_to_claude")
+    async def test_streaming_long_text_splits(self, mock_send, session_manager):
+        from megobari.bot import handle_message
+
+        long_text = "word " * 2000  # well beyond 4096
+
+        async def fake_send(prompt, session, on_text_chunk=None):
+            if on_text_chunk:
+                await on_text_chunk(long_text)
+            return (long_text, [], "sid-s")
+
+        mock_send.side_effect = fake_send
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # initialize() + split chunks = at least 2 calls
+        # (delete of original msg + split messages)
+        assert update.message.reply_text.call_count >= 2
+
+    @patch("megobari.bot.send_to_claude")
+    async def test_streaming_no_session_id_update(self, mock_send, session_manager):
+        from megobari.bot import handle_message
+
+        mock_send.return_value = ("ok", [], None)
+        session_manager.create("s")
+        session_manager.get("s").streaming = True
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        assert session_manager.get("s").session_id is None
+
+
+class TestSendTypingPeriodically:
+    async def test_typing_cancelled(self):
+        import asyncio
+
+        from megobari.bot import _send_typing_periodically
+
+        bot = AsyncMock()
+        task = asyncio.create_task(_send_typing_periodically(12345, bot))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        bot.send_chat_action.assert_called()
+
+
+class TestCmdDiscoverId:
+    async def test_discover_id(self):
+        from megobari.bot import _cmd_discover_id
+
+        update = _make_update()
+        ctx = _make_context(MagicMock())
+
+        await _cmd_discover_id(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "12345" in text
+        assert "ALLOWED_USER_ID" in text
+
+
+class TestCreateApplication:
+    @patch("megobari.bot.ALLOWED_USER_ID", 12345)
+    @patch("megobari.bot.ALLOWED_USERNAME", None)
+    @patch("megobari.bot.BOT_TOKEN", "fake-token")
+    def test_creates_with_user_id(self, session_manager):
+        from megobari.bot import create_application
+
+        app = create_application(session_manager)
+        assert app is not None
+        assert app.bot_data["session_manager"] is session_manager
+        # Should have handlers registered
+        assert len(app.handlers[0]) > 0
+
+    @patch("megobari.bot.ALLOWED_USER_ID", None)
+    @patch("megobari.bot.ALLOWED_USERNAME", "testuser")
+    @patch("megobari.bot.BOT_TOKEN", "fake-token")
+    def test_creates_with_username(self, session_manager):
+        from megobari.bot import create_application
+
+        app = create_application(session_manager)
+        assert app is not None
+        assert len(app.handlers[0]) > 0
+
+    @patch("megobari.bot.ALLOWED_USER_ID", None)
+    @patch("megobari.bot.ALLOWED_USERNAME", None)
+    @patch("megobari.bot.BOT_TOKEN", "fake-token")
+    def test_discovery_mode(self, session_manager):
+        from megobari.bot import create_application
+
+        app = create_application(session_manager)
+        assert app is not None
+        # In discovery mode, should have exactly 1 handler (catch-all)
+        assert len(app.handlers[0]) == 1
+
+
 class TestStreamingAccumulator:
     async def test_basic_flow(self):
         from megobari.bot import StreamingAccumulator
@@ -617,3 +795,70 @@ class TestStreamingAccumulator:
 
         assert len(result) == 5000
         msg.delete.assert_called_once()
+
+    async def test_edit_failure_ignored(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        msg.edit_text.side_effect = Exception("edit failed")
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Trigger edit by exceeding threshold
+        await acc.on_chunk("x" * 300)
+        # Should not raise despite edit failure
+        result = await acc.finalize()
+        assert len(result) == 300
+
+    async def test_delete_failure_ignored(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        msg.delete.side_effect = Exception("delete failed")
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        await acc.on_chunk("x" * 5000)
+        # Should not raise despite delete failure
+        result = await acc.finalize()
+        assert len(result) == 5000
+
+    async def test_finalize_empty(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Finalize without any chunks
+        result = await acc.finalize()
+        assert result == ""
+
+    async def test_threshold_edits(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Add text in small chunks — no edit until threshold
+        await acc.on_chunk("a" * 50)
+        msg.edit_text.assert_not_called()
+
+        # Exceed threshold
+        await acc.on_chunk("b" * 200)
+        msg.edit_text.assert_called_once()

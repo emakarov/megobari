@@ -309,3 +309,196 @@ class TestSendToClaude:
             call_args = mock_rq.call_args
             options = call_args[0][1]
             assert options.resume == "existing-sid"
+
+    async def test_message_parse_error(self):
+        from claude_agent_sdk._errors import MessageParseError
+
+        session = Session(name="s", cwd="/tmp")
+
+        with patch("megobari.claude_bridge._run_query") as mock_rq:
+            mock_rq.side_effect = MessageParseError("bad", data={"x": 1})
+            text, tools, sid = await send_to_claude("hi", session)
+
+        assert "parse error" in text.lower()
+        assert tools == []
+
+    async def test_cli_connection_error_with_resume(self):
+        from claude_agent_sdk import CLIConnectionError
+
+        session = Session(
+            name="s", cwd="/tmp", session_id="old-sid"
+        )
+
+        call_count = 0
+
+        async def mock_rq(prompt, options, session, on_text_chunk=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise CLIConnectionError("conn lost")
+            return ("reconnected", [], "new-sid")
+
+        with patch("megobari.claude_bridge._run_query", mock_rq):
+            text, _, sid = await send_to_claude("hi", session)
+
+        assert text == "reconnected"
+        assert call_count == 2
+
+    async def test_no_resume_option_without_session_id(self):
+        session = Session(name="s", cwd="/tmp")
+
+        with patch("megobari.claude_bridge._run_query") as mock_rq:
+            mock_rq.return_value = ("ok", [], "sid")
+            await send_to_claude("hi", session)
+            call_args = mock_rq.call_args
+            options = call_args[0][1]
+            assert not hasattr(options, "resume") or options.resume is None
+
+    async def test_long_prompt_truncated_in_log(self):
+        session = Session(name="s", cwd="/tmp")
+        long_prompt = "x" * 300
+
+        with patch("megobari.claude_bridge._run_query") as mock_rq:
+            mock_rq.return_value = ("ok", [], "sid")
+            text, _, _ = await send_to_claude(long_prompt, session)
+
+        assert text == "ok"
+
+
+class TestRunQueryEdgeCases:
+    async def test_result_with_usage(self):
+        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+
+        messages = [
+            ResultMessage(
+                subtype="result",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="sid",
+                total_cost_usd=0.05,
+                usage={"input_tokens": 100, "output_tokens": 50},
+            ),
+        ]
+
+        async def mock_query(**kwargs):
+            for m in messages:
+                yield m
+
+        session = Session(name="s")
+        options = ClaudeAgentOptions(
+            permission_mode="default", cwd="/tmp"
+        )
+
+        with patch("megobari.claude_bridge.query", mock_query):
+            text, _, sid = await _run_query("hi", options, session)
+
+        assert sid == "sid"
+
+    async def test_result_without_cost(self):
+        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+
+        messages = [
+            ResultMessage(
+                subtype="result",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="sid",
+            ),
+        ]
+
+        async def mock_query(**kwargs):
+            for m in messages:
+                yield m
+
+        session = Session(name="s")
+        options = ClaudeAgentOptions(
+            permission_mode="default", cwd="/tmp"
+        )
+
+        with patch("megobari.claude_bridge.query", mock_query):
+            text, _, _ = await _run_query("hi", options, session)
+
+        # Should return empty text since no content
+        assert text == ""
+
+    async def test_non_streaming_callback_not_called(self):
+        from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
+
+        messages = [
+            AssistantMessage(model="test", content=[TextBlock(text="hi")]),
+            ResultMessage(
+                subtype="result",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="sid",
+            ),
+        ]
+
+        async def mock_query(**kwargs):
+            for m in messages:
+                yield m
+
+        chunks = []
+
+        async def on_chunk(text):
+            chunks.append(text)
+
+        # streaming=False, so callback should NOT be called
+        session = Session(name="s", streaming=False)
+        options = ClaudeAgentOptions(
+            permission_mode="default", cwd="/tmp"
+        )
+
+        with patch("megobari.claude_bridge.query", mock_query):
+            text, _, _ = await _run_query(
+                "hi", options, session, on_text_chunk=on_chunk
+            )
+
+        assert text == "hi"
+        assert chunks == []
+
+    async def test_system_message_non_init_ignored(self):
+        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, SystemMessage
+
+        messages = [
+            SystemMessage(subtype="other", data={"foo": "bar"}),
+            ResultMessage(
+                subtype="result",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="sid",
+            ),
+        ]
+
+        async def mock_query(**kwargs):
+            for m in messages:
+                yield m
+
+        session = Session(name="s")
+        options = ClaudeAgentOptions(
+            permission_mode="default", cwd="/tmp"
+        )
+
+        with patch("megobari.claude_bridge.query", mock_query):
+            text, _, sid = await _run_query("hi", options, session)
+
+        assert text == ""
+        assert sid == "sid"
+
+
+class TestPatchMessageParser:
+    def test_patched_parser_handles_unknown_type(self):
+        import claude_agent_sdk._internal.message_parser as mp
+        from claude_agent_sdk import SystemMessage
+
+        # The patched parser should handle unknown types gracefully
+        result = mp.parse_message({"type": "unknown_event", "data": {}})
+        assert isinstance(result, SystemMessage)
