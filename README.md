@@ -57,6 +57,20 @@ To find your Telegram user ID, start the bot without `ALLOWED_USER` set — it w
 ./run.sh stop
 ```
 
+### Run modes
+
+| Mode | Command | Restarts on | Best for |
+|---|---|---|---|
+| **watch** | `./run.sh watch` | Any `.py` file change | Active development |
+| **hook** | `./run.sh hook` | `git commit` | Stable dev / staging |
+| **once** | `./run.sh once` | — | Production / manual runs |
+
+**Watch mode** uses [watchfiles](https://watchfiles.helpmanual.io/) to monitor `src/` for Python file changes and restarts the bot instantly on save.
+
+**Hook mode** runs the bot in a restart loop. A git `post-commit` hook (installed via `./run.sh install-hook`) sends SIGTERM to the running bot after each commit, and the loop automatically restarts it with the new code.
+
+Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use `./run.sh stop` to stop the bot from either mode.
+
 ### Commands
 
 | Command | Description |
@@ -105,20 +119,22 @@ uv run pre-commit install
 ### Project structure
 
 ```
+run.sh                 # Bot launcher (watch / hook / once / stop)
 src/megobari/
-  __main__.py        # Entry point
-  config.py          # Environment configuration
-  bot.py             # Telegram handlers
-  claude_bridge.py   # Agent SDK integration
-  session.py         # Session dataclass + manager
-  formatting.py      # Formatter ABC (Telegram HTML, plain text)
-  message_utils.py   # Message splitting, formatting helpers
+  __main__.py          # Entry point
+  config.py            # Environment configuration
+  bot.py               # Telegram handlers
+  claude_bridge.py     # Agent SDK integration
+  session.py           # Session dataclass + manager
+  formatting.py        # Formatter ABC (Telegram HTML, plain text)
+  message_utils.py     # Message splitting, formatting helpers
 tests/
-  test_session.py
-  test_formatting.py
-  test_message_utils.py
   test_bot.py
   test_claude_bridge.py
+  test_formatting.py
+  test_main.py
+  test_message_utils.py
+  test_session.py
 ```
 
 ## Architecture
@@ -134,3 +150,7 @@ Telegram  <-->  bot.py  <-->  claude_bridge.py  <-->  Claude Code CLI
 ```
 
 The `Formatter` abstraction decouples presentation from logic. Swap `TelegramFormatter` for another implementation to support Discord, Slack, CLI, etc.
+
+## Name
+
+**Megobari** (მეგობარი) is the Georgian word for "friend". The name reflects the idea of having a helpful companion always at hand — a coding friend you can reach from your phone through Telegram.
