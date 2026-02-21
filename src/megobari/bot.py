@@ -1,0 +1,423 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from megobari.claude_bridge import send_to_claude
+from megobari.config import ALLOWED_USER_ID, ALLOWED_USERNAME, BOT_TOKEN
+from megobari.formatting import Formatter, TelegramFormatter
+from megobari.message_utils import (
+    format_help,
+    format_session_info,
+    format_session_list,
+    format_tool_summary,
+    split_message,
+)
+from megobari.session import SessionManager, VALID_PERMISSION_MODES
+
+logger = logging.getLogger(__name__)
+
+# Client-specific formatter — swap this out for other frontends.
+fmt: Formatter = TelegramFormatter()
+
+
+def _get_sm(context: ContextTypes.DEFAULT_TYPE) -> SessionManager:
+    return context.bot_data["session_manager"]
+
+
+def _reply(update: Update, text: str, formatted: bool = False):
+    """Helper: reply with or without parse_mode."""
+    kwargs = {}
+    if formatted:
+        kwargs["parse_mode"] = fmt.parse_mode
+    return update.message.reply_text(text, **kwargs)
+
+
+# -- Command handlers --
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    if not sm.list_all():
+        sm.create("default")
+    await _reply(
+        update,
+        "Megobari is ready.\n\n"
+        "Send a message to talk to Claude.\n"
+        "Use /help to see all commands.",
+    )
+
+
+async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await _reply(update, "Usage: /new <name>")
+        return
+    name = context.args[0]
+    sm = _get_sm(context)
+    session = sm.create(name)
+    if session is None:
+        await _reply(update, f"Session '{name}' already exists.")
+        return
+    await _reply(update, f"Created and switched to session '{name}'.")
+
+
+async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    text = format_session_list(sm.list_all(), sm.active_name, fmt)
+    await _reply(update, text, formatted=True)
+
+
+async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await _reply(update, "Usage: /switch <name>")
+        return
+    name = context.args[0]
+    sm = _get_sm(context)
+    session = sm.switch(name)
+    if session is None:
+        await _reply(update, f"Session '{name}' not found.")
+        return
+    await _reply(update, f"Switched to session '{name}'.")
+
+
+async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await _reply(update, "Usage: /delete <name>")
+        return
+    name = context.args[0]
+    sm = _get_sm(context)
+    if not sm.delete(name):
+        await _reply(update, f"Session '{name}' not found.")
+        return
+    active = sm.active_name
+    if active:
+        await _reply(update, f"Deleted '{name}'. Active session is now '{active}'.")
+    else:
+        await _reply(
+            update,
+            f"Deleted '{name}'. No sessions left. Use /new <name> to create one.",
+        )
+
+
+async def cmd_stream(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+    if not context.args or context.args[0] not in ("on", "off"):
+        await _reply(
+            update,
+            f"Usage: /stream on|off\nCurrently: {'on' if session.streaming else 'off'}",
+        )
+        return
+    session.streaming = context.args[0] == "on"
+    sm._save()
+    await _reply(
+        update,
+        f"Streaming {'enabled' if session.streaming else 'disabled'} for '{session.name}'.",
+    )
+
+
+async def cmd_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+    if not context.args or context.args[0] not in VALID_PERMISSION_MODES:
+        modes = ", ".join(sorted(VALID_PERMISSION_MODES))
+        await _reply(
+            update,
+            f"Usage: /permissions <mode>\nModes: {modes}\n"
+            f"Currently: {session.permission_mode}",
+        )
+        return
+    session.permission_mode = context.args[0]  # type: ignore[assignment]
+    sm._save()
+    await _reply(
+        update,
+        f"Permission mode set to '{session.permission_mode}' for '{session.name}'.",
+    )
+
+
+async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+    if not context.args:
+        await _reply(update, f"Current directory: {session.cwd}\n\nUsage: /cd <path>")
+        return
+    path = " ".join(context.args)  # support paths with spaces
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_dir():
+        await _reply(update, f"Directory not found: {resolved}")
+        return
+    session.cwd = str(resolved)
+    sm._save()
+    await _reply(update, f"Working directory: {session.cwd}")
+
+
+async def cmd_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    if not context.args:
+        # List directories
+        lines = [fmt.bold("Directories:"), ""]
+        lines.append(f"▸ {fmt.code(fmt.escape(session.cwd))} (cwd)")
+        for d in session.dirs:
+            lines.append(f"  {fmt.code(fmt.escape(d))}")
+        if not session.dirs:
+            lines.append(fmt.italic("No extra directories. Use /dirs add <path>"))
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    action = context.args[0]
+
+    if action == "add":
+        if len(context.args) < 2:
+            await _reply(update, "Usage: /dirs add <path>")
+            return
+        path = " ".join(context.args[1:])
+        resolved = str(Path(path).expanduser().resolve())
+        if not Path(resolved).is_dir():
+            await _reply(update, f"Directory not found: {resolved}")
+            return
+        if resolved in session.dirs or resolved == session.cwd:
+            await _reply(update, f"Already added: {resolved}")
+            return
+        session.dirs.append(resolved)
+        sm._save()
+        await _reply(update, f"Added: {resolved}")
+
+    elif action == "rm":
+        if len(context.args) < 2:
+            await _reply(update, "Usage: /dirs rm <path>")
+            return
+        path = " ".join(context.args[1:])
+        resolved = str(Path(path).expanduser().resolve())
+        if resolved not in session.dirs:
+            await _reply(update, f"Not in directory list: {resolved}")
+            return
+        session.dirs.remove(resolved)
+        sm._save()
+        await _reply(update, f"Removed: {resolved}")
+
+    else:
+        await _reply(update, "Usage: /dirs [add|rm] <path>")
+
+
+async def cmd_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args or len(context.args) < 2:
+        await _reply(update, "Usage: /rename <old_name> <new_name>")
+        return
+    old_name, new_name = context.args[0], context.args[1]
+    sm = _get_sm(context)
+    error = sm.rename(old_name, new_name)
+    if error:
+        await _reply(update, error)
+        return
+    await _reply(update, f"Renamed '{old_name}' → '{new_name}'.")
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _reply(update, format_help(fmt), formatted=True)
+
+
+async def cmd_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+    await _reply(update, format_session_info(session, fmt), formatted=True)
+
+
+# -- Message handler --
+
+
+async def _send_typing_periodically(chat_id: int, bot) -> None:
+    try:
+        while True:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+
+class StreamingAccumulator:
+    def __init__(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self.update = update
+        self.context = context
+        self.accumulated = ""
+        self.message = None
+        self.last_edit_len = 0
+        self.edit_threshold = 200
+
+    async def initialize(self):
+        self.message = await self.update.message.reply_text("...")
+
+    async def on_chunk(self, text: str) -> None:
+        self.accumulated += text
+        if len(self.accumulated) - self.last_edit_len >= self.edit_threshold:
+            await self._do_edit()
+
+    async def _do_edit(self) -> None:
+        display = self.accumulated[:4096]
+        try:
+            await self.message.edit_text(display)
+            self.last_edit_len = len(self.accumulated)
+        except Exception:
+            pass  # ignore edit failures (e.g., text unchanged)
+
+    async def finalize(self) -> str:
+        if self.accumulated and self.message:
+            if len(self.accumulated) <= 4096:
+                await self._do_edit()
+            else:
+                try:
+                    await self.message.delete()
+                except Exception:
+                    pass
+        return self.accumulated
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    user_text = update.message.text
+    chat_id = update.effective_chat.id
+
+    logger.info(
+        "[%s] User: %s",
+        session.name,
+        user_text[:200] + ("..." if len(user_text) > 200 else ""),
+    )
+
+    # Start typing indicator
+    typing_task = asyncio.create_task(
+        _send_typing_periodically(chat_id, context.bot)
+    )
+
+    try:
+        if session.streaming:
+            accumulator = StreamingAccumulator(update, context)
+            await accumulator.initialize()
+            response_text, tool_uses, new_session_id = await send_to_claude(
+                prompt=user_text,
+                session=session,
+                on_text_chunk=accumulator.on_chunk,
+            )
+            full_text = await accumulator.finalize()
+
+            # Send tool summary as a separate formatted message
+            if tool_uses:
+                summary = format_tool_summary(tool_uses, fmt)
+                await _reply(update, summary, formatted=True)
+
+            # If text was too long for single message, send as splits
+            if len(full_text) > 4096:
+                for chunk in split_message(full_text):
+                    await _reply(update, chunk)
+        else:
+            response_text, tool_uses, new_session_id = await send_to_claude(
+                prompt=user_text,
+                session=session,
+            )
+
+            if tool_uses:
+                summary = format_tool_summary(tool_uses, fmt)
+                # Combine summary + escaped response in one HTML message
+                escaped = fmt.escape(response_text)
+                combined = f"{summary}\n\n{escaped}"
+                for chunk in split_message(combined):
+                    await _reply(update, chunk, formatted=True)
+            else:
+                for chunk in split_message(response_text):
+                    await _reply(update, chunk)
+
+        # Update session
+        if new_session_id:
+            sm.update_session_id(session.name, new_session_id)
+
+    except Exception as e:
+        logger.exception("Error handling message")
+        await _reply(update, f"Something went wrong: {e}")
+
+    finally:
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+
+# -- Application factory --
+
+
+async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Used when ALLOWED_USER_ID is not set — tells the user their numeric ID."""
+    user = update.effective_user
+    logger.info("User ID discovery: id=%s username=%s", user.id, user.username)
+    await update.message.reply_text(
+        f"Your Telegram user ID is: {user.id}\n\n"
+        f"Set this in your .env file as:\n"
+        f"ALLOWED_USER_ID={user.id}\n\n"
+        f"Then restart the bot."
+    )
+
+
+def create_application(session_manager: SessionManager) -> Application:
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.bot_data["session_manager"] = session_manager
+
+    if ALLOWED_USER_ID is not None:
+        user_filter = filters.User(user_id=ALLOWED_USER_ID)
+    elif ALLOWED_USERNAME is not None:
+        user_filter = filters.User(username=ALLOWED_USERNAME)
+    else:
+        logger.warning("ALLOWED_USER not set — running in ID discovery mode.")
+        app.add_handler(MessageHandler(filters.ALL, _cmd_discover_id))
+        return app
+
+    app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
+    app.add_handler(CommandHandler("new", cmd_new, filters=user_filter))
+    app.add_handler(CommandHandler("sessions", cmd_sessions, filters=user_filter))
+    app.add_handler(CommandHandler("switch", cmd_switch, filters=user_filter))
+    app.add_handler(CommandHandler("delete", cmd_delete, filters=user_filter))
+    app.add_handler(CommandHandler("rename", cmd_rename, filters=user_filter))
+    app.add_handler(CommandHandler("cd", cmd_cd, filters=user_filter))
+    app.add_handler(CommandHandler("dirs", cmd_dirs, filters=user_filter))
+    app.add_handler(CommandHandler("help", cmd_help, filters=user_filter))
+    app.add_handler(CommandHandler("stream", cmd_stream, filters=user_filter))
+    app.add_handler(CommandHandler("permissions", cmd_permissions, filters=user_filter))
+    app.add_handler(CommandHandler("current", cmd_current, filters=user_filter))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & user_filter,
+            handle_message,
+        )
+    )
+
+    return app

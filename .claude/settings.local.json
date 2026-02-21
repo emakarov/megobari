@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:blackboard.sh)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:electrobun.dev)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(python3 -m pip install:*)"
+    ]
+  }
+}
