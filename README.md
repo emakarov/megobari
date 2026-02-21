@@ -90,6 +90,22 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 | `/permissions <mode>` | Set permission mode |
 | `/help` | Show all commands |
 
+### Permission modes
+
+The `/permissions` command controls how Claude handles tool approvals:
+
+| Mode | Behavior |
+|---|---|
+| `default` | Requires interactive approval for file writes and commands. **Not usable via Telegram** — prompts have nowhere to go and the agent will hang. |
+| `acceptEdits` | Auto-approves file reads, writes, and edits. Still prompts for bash commands. **Recommended for normal use.** |
+| `bypassPermissions` | Approves everything automatically. Use when you need the agent to run commands freely. |
+
+Set it per session:
+
+```
+/permissions acceptEdits
+```
+
 ### Sessions
 
 Each session maintains its own:
@@ -113,15 +129,12 @@ Megobari doubles as a Claude Code plugin marketplace with a curated collection o
 
 ### Available plugins
 
-| Plugin | Category | Description |
-|---|---|---|
-| `clickhouse-skills` | Database | 28 validated rules for ClickHouse schema design, queries, and ingestion |
-| `transit-data` | Development | GTFS public transit data analysis skills |
+No plugins yet — the collection is being curated.
 
 ### Install a plugin
 
 ```bash
-/plugin install clickhouse-skills
+/plugin install <plugin-name>
 ```
 
 ### Structure
@@ -129,9 +142,7 @@ Megobari doubles as a Claude Code plugin marketplace with a curated collection o
 ```
 .claude-plugin/
   marketplace.json         # Marketplace index
-plugins/
-  clickhouse-skills/       # ClickHouse best practices (28 rules)
-  transit-data/            # GTFS transit data analysis
+plugins/                   # Curated skills and MCP configs
 ```
 
 See [REQ-002](requirements/002-skills-and-mcp-library.md) for the full design.
@@ -161,8 +172,6 @@ run.sh                     # Bot launcher (watch / hook / once / stop)
 .claude-plugin/
   marketplace.json         # Plugin marketplace index
 plugins/                   # Curated skills and MCP configs
-  clickhouse-skills/
-  transit-data/
 src/megobari/
   __main__.py              # Entry point
   config.py                # Environment configuration

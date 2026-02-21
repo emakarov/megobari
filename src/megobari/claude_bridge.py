@@ -78,6 +78,7 @@ async def _run_query(
     options: ClaudeAgentOptions,
     session: Session,
     on_text_chunk: Callable[[str], Awaitable[None]] | None = None,
+    on_tool_use: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> tuple[str, list[tuple[str, dict]], str | None]:
     """Run a single query. Returns (text_parts joined, tool_uses, session_id)."""
     session_id: str | None = session.session_id
@@ -103,6 +104,8 @@ async def _run_query(
                 elif isinstance(block, ToolUseBlock):
                     tool_uses.append((block.name, block.input))
                     logger.info("Tool use: %s %s", block.name, block.input)
+                    if on_tool_use:
+                        await on_tool_use(block.name, block.input)
 
         elif isinstance(message, ResultMessage):
             session_id = message.session_id
@@ -125,6 +128,7 @@ async def send_to_claude(
     prompt: str,
     session: Session,
     on_text_chunk: Callable[[str], Awaitable[None]] | None = None,
+    on_tool_use: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> tuple[str, list[tuple[str, dict]], str | None]:
     """Send a prompt to Claude via the Agent SDK.
 
@@ -152,7 +156,7 @@ async def send_to_claude(
 
     try:
         response, tool_uses, session_id = await _run_query(
-            prompt, options, session, on_text_chunk
+            prompt, options, session, on_text_chunk, on_tool_use
         )
     except (ProcessError, CLIConnectionError) as e:
         # If resume failed, retry without resume
@@ -163,7 +167,7 @@ async def send_to_claude(
             options.resume = None
             try:
                 response, tool_uses, session_id = await _run_query(
-                    prompt, options, session, on_text_chunk
+                    prompt, options, session, on_text_chunk, on_tool_use
                 )
             except Exception as retry_err:
                 logger.exception("Retry also failed")

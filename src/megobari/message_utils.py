@@ -123,6 +123,36 @@ def format_help(fmt: Formatter | None = None) -> str:
     return "\n".join(lines)
 
 
+def tool_status_text(tool_name: str, tool_input: dict) -> str:
+    """Return a short status line for a tool use event.
+
+    Used to show live progress in the placeholder message while the agent works.
+    """
+    if tool_name in ("Read", "Write", "Edit"):
+        filename = PurePosixPath(tool_input.get("file_path", "")).name or "file"
+        verbs = {"Read": "Reading", "Write": "Writing", "Edit": "Editing"}
+        return f"\u270f\ufe0f {verbs[tool_name]} {filename}..."
+    if tool_name == "Glob":
+        return "\U0001f50d Searching files..."
+    if tool_name == "Grep":
+        return "\U0001f50d Searching codebase..."
+    if tool_name == "Bash":
+        desc = tool_input.get("description", "")
+        if desc:
+            short = desc[:40] + ("..." if len(desc) > 40 else "")
+            return f"\u26a1 {short}"
+        return "\u26a1 Running command..."
+    if tool_name == "WebSearch":
+        return "\U0001f310 Searching web..."
+    if tool_name == "WebFetch":
+        return "\U0001f310 Fetching page..."
+    if tool_name == "Task":
+        return "\U0001f916 Launching agent..."
+    if tool_name == "TodoWrite":
+        return "\U0001f4cb Updating tasks..."
+    return f"\U0001f527 {tool_name}..."
+
+
 def format_tool_summary(
     tool_uses: list[tuple[str, dict]], fmt: Formatter | None = None
 ) -> str:

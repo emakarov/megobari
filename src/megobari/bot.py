@@ -19,6 +19,7 @@ from megobari.message_utils import (
     format_session_list,
     format_tool_summary,
     split_message,
+    tool_status_text,
 )
 from megobari.session import VALID_PERMISSION_MODES, SessionManager
 
@@ -280,13 +281,25 @@ class StreamingAccumulator:
         self.message = None
         self.last_edit_len = 0
         self.edit_threshold = 200
+        self._text_started = False
 
     async def initialize(self):
         """Send initial placeholder message."""
-        self.message = await self.update.message.reply_text("...")
+        self.message = await self.update.message.reply_text("\u2026")
+
+    async def on_tool_use(self, tool_name: str, tool_input: dict) -> None:
+        """Update placeholder with tool activity before text starts streaming."""
+        if self._text_started or not self.message:
+            return
+        status = tool_status_text(tool_name, tool_input)
+        try:
+            await self.message.edit_text(status)
+        except Exception:
+            pass
 
     async def on_chunk(self, text: str) -> None:
         """Accumulate text chunk and update message if threshold reached."""
+        self._text_started = True
         self.accumulated += text
         if len(self.accumulated) - self.last_edit_len >= self.edit_threshold:
             await self._do_edit()
@@ -312,6 +325,18 @@ class StreamingAccumulator:
         return self.accumulated
 
 
+async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -> None:
+    """Set or remove a reaction on a message. Failures are silently ignored."""
+    try:
+        await bot.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=emoji,
+        )
+    except Exception:
+        pass
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages and send to Claude."""
     sm = _get_sm(context)
@@ -322,12 +347,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_text = update.message.text
     chat_id = update.effective_chat.id
+    message_id = update.message.message_id
 
     logger.info(
         "[%s] User: %s",
         session.name,
         user_text[:200] + ("..." if len(user_text) > 200 else ""),
     )
+
+    # React with eyes to show we're working
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
 
     # Start typing indicator
     typing_task = asyncio.create_task(
@@ -342,6 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 prompt=user_text,
                 session=session,
                 on_text_chunk=accumulator.on_chunk,
+                on_tool_use=accumulator.on_tool_use,
             )
             full_text = await accumulator.finalize()
 
@@ -355,10 +385,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 for chunk in split_message(full_text):
                     await _reply(update, chunk)
         else:
+            # Non-streaming: show tool activity in a status message
+            status_msg = None
+
+            async def _on_tool_use_ns(tool_name: str, tool_input: dict) -> None:
+                nonlocal status_msg
+                status = tool_status_text(tool_name, tool_input)
+                try:
+                    if status_msg is None:
+                        status_msg = await update.message.reply_text(status)
+                    else:
+                        await status_msg.edit_text(status)
+                except Exception:
+                    pass
+
             response_text, tool_uses, new_session_id = await send_to_claude(
                 prompt=user_text,
                 session=session,
+                on_tool_use=_on_tool_use_ns,
             )
+
+            # Delete the status message before sending the real response
+            if status_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
 
             if tool_uses:
                 summary = format_tool_summary(tool_uses, fmt)
@@ -385,6 +437,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await typing_task
         except asyncio.CancelledError:
             pass
+        # Remove the eyes reaction when done
+        await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 # -- Application factory --

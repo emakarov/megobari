@@ -536,6 +536,37 @@ class TestCmdCurrent:
         assert "No active session" in text
 
 
+class TestSetReaction:
+    async def test_set_reaction(self):
+        from megobari.bot import _set_reaction
+
+        bot = AsyncMock()
+        await _set_reaction(bot, 123, 456, "\U0001f440")
+
+        bot.set_message_reaction.assert_called_once_with(
+            chat_id=123, message_id=456, reaction="\U0001f440",
+        )
+
+    async def test_remove_reaction(self):
+        from megobari.bot import _set_reaction
+
+        bot = AsyncMock()
+        await _set_reaction(bot, 123, 456, None)
+
+        bot.set_message_reaction.assert_called_once_with(
+            chat_id=123, message_id=456, reaction=None,
+        )
+
+    async def test_failure_ignored(self):
+        from megobari.bot import _set_reaction
+
+        bot = AsyncMock()
+        bot.set_message_reaction.side_effect = Exception("not supported")
+
+        # Should not raise
+        await _set_reaction(bot, 123, 456, "\U0001f440")
+
+
 class TestHandleMessage:
     async def test_no_session(self, session_manager):
         from megobari.bot import handle_message
@@ -555,6 +586,7 @@ class TestHandleMessage:
         mock_send.return_value = ("Hello!", [], "sid-123")
         session_manager.create("s")
         update = _make_update()
+        update.message.message_id = 99
         ctx = _make_context(session_manager)
 
         await handle_message(update, ctx)
@@ -562,6 +594,11 @@ class TestHandleMessage:
         mock_send.assert_called_once()
         # Should have replied (reply_text called at least once)
         assert update.message.reply_text.call_count >= 1
+        # Reaction should have been set and cleared
+        calls = ctx.bot.set_message_reaction.call_args_list
+        assert len(calls) >= 2
+        assert calls[0][1]["reaction"] == "\U0001f440"
+        assert calls[-1][1]["reaction"] is None
 
     @patch("megobari.bot.send_to_claude")
     async def test_with_tool_uses(self, mock_send, session_manager):
@@ -574,6 +611,7 @@ class TestHandleMessage:
         )
         session_manager.create("s")
         update = _make_update()
+        update.message.message_id = 99
         ctx = _make_context(session_manager)
 
         await handle_message(update, ctx)
@@ -588,6 +626,7 @@ class TestHandleMessage:
         mock_send.return_value = ("Hello!", [], "new-sid")
         session_manager.create("s")
         update = _make_update()
+        update.message.message_id = 99
         ctx = _make_context(session_manager)
 
         await handle_message(update, ctx)
@@ -601,12 +640,40 @@ class TestHandleMessage:
         mock_send.side_effect = RuntimeError("boom")
         session_manager.create("s")
         update = _make_update()
+        update.message.message_id = 99
         ctx = _make_context(session_manager)
 
         await handle_message(update, ctx)
 
         text = update.message.reply_text.call_args[0][0]
         assert "Something went wrong" in text
+        # Reaction should still be cleared in finally
+        last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
+        assert last_reaction[1]["reaction"] is None
+
+    @patch("megobari.bot.send_to_claude")
+    async def test_non_streaming_tool_status_message(self, mock_send, session_manager):
+        from megobari.bot import handle_message
+
+        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+            if on_tool_use:
+                await on_tool_use("Read", {"file_path": "/a/b/foo.py"})
+                await on_tool_use("Bash", {"command": "ls"})
+            return ("Done!", [("Read", {"file_path": "/a/b/foo.py"})], "sid")
+
+        mock_send.side_effect = fake_send
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        status_msg = AsyncMock()
+        # First reply_text call returns the status message
+        update.message.reply_text.side_effect = [status_msg, AsyncMock()]
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # Status message should have been created and then deleted
+        status_msg.delete.assert_called_once()
 
 
 class TestHandleMessageStreaming:
@@ -618,6 +685,7 @@ class TestHandleMessageStreaming:
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
+        update.message.message_id = 99
         msg = AsyncMock()
         update.message.reply_text.return_value = msg
         ctx = _make_context(session_manager)
@@ -625,9 +693,10 @@ class TestHandleMessageStreaming:
         await handle_message(update, ctx)
 
         mock_send.assert_called_once()
-        # on_text_chunk callback should have been passed
+        # on_text_chunk and on_tool_use callbacks should have been passed
         call_kwargs = mock_send.call_args[1]
         assert "on_text_chunk" in call_kwargs
+        assert "on_tool_use" in call_kwargs
 
     @patch("megobari.bot.send_to_claude")
     async def test_streaming_with_tools(self, mock_send, session_manager):
@@ -641,6 +710,7 @@ class TestHandleMessageStreaming:
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
+        update.message.message_id = 99
         msg = AsyncMock()
         update.message.reply_text.return_value = msg
         ctx = _make_context(session_manager)
@@ -649,7 +719,7 @@ class TestHandleMessageStreaming:
 
         # Tool summary should be sent
         calls = update.message.reply_text.call_args_list
-        any_tool_call = any("⚡" in str(c) for c in calls)
+        any_tool_call = any("\u26a1" in str(c) for c in calls)
         assert any_tool_call
 
     @patch("megobari.bot.send_to_claude")
@@ -658,7 +728,7 @@ class TestHandleMessageStreaming:
 
         long_text = "word " * 2000  # well beyond 4096
 
-        async def fake_send(prompt, session, on_text_chunk=None):
+        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
             if on_text_chunk:
                 await on_text_chunk(long_text)
             return (long_text, [], "sid-s")
@@ -667,6 +737,7 @@ class TestHandleMessageStreaming:
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
+        update.message.message_id = 99
         msg = AsyncMock()
         update.message.reply_text.return_value = msg
         ctx = _make_context(session_manager)
@@ -685,6 +756,7 @@ class TestHandleMessageStreaming:
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
+        update.message.message_id = 99
         msg = AsyncMock()
         update.message.reply_text.return_value = msg
         ctx = _make_context(session_manager)
@@ -843,6 +915,58 @@ class TestStreamingAccumulator:
         # Finalize without any chunks
         result = await acc.finalize()
         assert result == ""
+
+    async def test_tool_status_before_text(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Tool use before any text
+        await acc.on_tool_use("Read", {"file_path": "/a/b/foo.py"})
+        msg.edit_text.assert_called_once()
+        status = msg.edit_text.call_args[0][0]
+        assert "Reading" in status
+        assert "foo.py" in status
+
+    async def test_tool_status_ignored_after_text(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Text arrives first
+        await acc.on_chunk("hello")
+        msg.edit_text.reset_mock()
+
+        # Tool use after text — should be ignored
+        await acc.on_tool_use("Bash", {"command": "ls"})
+        msg.edit_text.assert_not_called()
+
+    async def test_tool_status_edit_failure_ignored(self):
+        from megobari.bot import StreamingAccumulator
+
+        update = _make_update()
+        msg = AsyncMock()
+        msg.edit_text.side_effect = Exception("edit failed")
+        update.message.reply_text.return_value = msg
+        ctx = _make_context(MagicMock())
+
+        acc = StreamingAccumulator(update, ctx)
+        await acc.initialize()
+
+        # Should not raise
+        await acc.on_tool_use("Grep", {"pattern": "TODO"})
 
     async def test_threshold_edits(self):
         from megobari.bot import StreamingAccumulator

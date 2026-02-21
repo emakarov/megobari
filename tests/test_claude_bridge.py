@@ -179,6 +179,58 @@ class TestRunQuery:
         # ResultMessage session_id takes precedence
         assert sid == "result-sid"
 
+    async def test_on_tool_use_callback(self):
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ResultMessage,
+            TextBlock,
+            ToolUseBlock,
+        )
+
+        messages = [
+            AssistantMessage(
+                model="test",
+                content=[
+                    ToolUseBlock(
+                        id="t1", name="Read", input={"file_path": "/a/foo.py"}
+                    ),
+                    TextBlock(text="Contents here."),
+                ],
+            ),
+            ResultMessage(
+                subtype="result",
+                duration_ms=200,
+                duration_api_ms=150,
+                is_error=False,
+                num_turns=1,
+                session_id="sid",
+            ),
+        ]
+
+        async def mock_query(**kwargs):
+            for m in messages:
+                yield m
+
+        tool_events = []
+
+        async def on_tool(name, inp):
+            tool_events.append((name, inp))
+
+        session = Session(name="s")
+        options = ClaudeAgentOptions(
+            permission_mode="default", cwd="/tmp"
+        )
+
+        with patch("megobari.claude_bridge.query", mock_query):
+            text, tool_uses, sid = await _run_query(
+                "hi", options, session, on_tool_use=on_tool
+            )
+
+        assert len(tool_events) == 1
+        assert tool_events[0] == ("Read", {"file_path": "/a/foo.py"})
+        assert len(tool_uses) == 1
+
     async def test_result_fallback_text(self):
         from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 
@@ -250,7 +302,7 @@ class TestSendToClaude:
 
         call_count = 0
 
-        async def mock_rq(prompt, options, session, on_text_chunk=None):
+        async def mock_rq(prompt, options, session, on_text_chunk=None, on_tool_use=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -331,7 +383,7 @@ class TestSendToClaude:
 
         call_count = 0
 
-        async def mock_rq(prompt, options, session, on_text_chunk=None):
+        async def mock_rq(prompt, options, session, on_text_chunk=None, on_tool_use=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

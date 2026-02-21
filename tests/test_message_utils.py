@@ -9,6 +9,7 @@ from megobari.message_utils import (
     format_session_list,
     format_tool_summary,
     split_message,
+    tool_status_text,
 )
 from megobari.session import Session
 
@@ -219,6 +220,70 @@ class TestFormatToolSummary:
         tools = [("Bash", {"command": "echo hi"})]
         text = format_tool_summary(tools)
         assert "echo hi" in text
+
+
+class TestToolStatusText:
+    def test_read(self):
+        text = tool_status_text("Read", {"file_path": "/a/b/foo.py"})
+        assert "Reading" in text
+        assert "foo.py" in text
+
+    def test_write(self):
+        text = tool_status_text("Write", {"file_path": "/a/b/out.txt"})
+        assert "Writing" in text
+        assert "out.txt" in text
+
+    def test_edit(self):
+        text = tool_status_text("Edit", {"file_path": "/a/b/bar.py"})
+        assert "Editing" in text
+        assert "bar.py" in text
+
+    def test_read_no_path(self):
+        text = tool_status_text("Read", {})
+        assert "Reading" in text
+        assert "file" in text
+
+    def test_glob(self):
+        text = tool_status_text("Glob", {"pattern": "**/*.py"})
+        assert "Searching files" in text
+
+    def test_grep(self):
+        text = tool_status_text("Grep", {"pattern": "TODO"})
+        assert "Searching codebase" in text
+
+    def test_bash_with_description(self):
+        text = tool_status_text("Bash", {"description": "Run unit tests"})
+        assert "Run unit tests" in text
+
+    def test_bash_long_description_truncated(self):
+        long_desc = "x" * 60
+        text = tool_status_text("Bash", {"description": long_desc})
+        assert "..." in text
+        assert len(text) < 60
+
+    def test_bash_no_description(self):
+        text = tool_status_text("Bash", {"command": "ls"})
+        assert "Running command" in text
+
+    def test_websearch(self):
+        text = tool_status_text("WebSearch", {"query": "python docs"})
+        assert "Searching web" in text
+
+    def test_webfetch(self):
+        text = tool_status_text("WebFetch", {"url": "https://example.com"})
+        assert "Fetching page" in text
+
+    def test_task(self):
+        text = tool_status_text("Task", {})
+        assert "Launching agent" in text
+
+    def test_todowrite(self):
+        text = tool_status_text("TodoWrite", {})
+        assert "Updating tasks" in text
+
+    def test_unknown_tool(self):
+        text = tool_status_text("SomeNewTool", {})
+        assert "SomeNewTool" in text
 
 
 class TestFormatHelp:

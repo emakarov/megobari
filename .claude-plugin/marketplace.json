@@ -6,19 +6,5 @@
     "name": "Megobari",
     "email": "megobari@example.com"
   },
-  "plugins": [
-    {
-      "name": "clickhouse-skills",
-      "description": "ClickHouse best practices and query optimization rules — 28 validated rules for schema design, queries, and data ingestion",
-      "source": "./plugins/clickhouse-skills",
-      "category": "database",
-      "homepage": "https://clickhouse.com/docs/best-practices"
-    },
-    {
-      "name": "transit-data",
-      "description": "GTFS transit data analysis skills for working with public transportation feeds, routes, schedules, and service patterns",
-      "source": "./plugins/transit-data",
-      "category": "development"
-    }
-  ]
+  "plugins": []
 }
