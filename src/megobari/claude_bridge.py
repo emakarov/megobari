@@ -23,8 +23,10 @@ from megobari.session import Session
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_TOOLS = [
-    "Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch",
+# Block interactive tools that require user input.
+# Everything else (built-in + MCP) is inherited from the CLI automatically.
+DISALLOWED_TOOLS = [
+    "AskUserQuestion", "EnterPlanMode", "EnterWorktree",
 ]
 
 _BASE_SYSTEM_PROMPT = (
@@ -142,7 +144,7 @@ async def send_to_claude(
     options = ClaudeAgentOptions(
         permission_mode=session.permission_mode,
         cwd=session.cwd,
-        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
         system_prompt=_build_system_prompt(session),
     )
     if session.session_id:
