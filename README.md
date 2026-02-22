@@ -13,6 +13,8 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 - **Rich Telegram formatting** — HTML-formatted tool summaries, session info, help
 - **Client-agnostic formatting** — `Formatter` abstraction for future non-Telegram frontends
 - **Library API** — embed Megobari in your own Python project
+- **Voice messages** — send voice messages, transcribed locally via faster-whisper
+- **Action protocol** — Claude can send files and restart the bot via embedded action blocks
 - **Plugin marketplace** — curated collection of Claude Code skills and MCP integrations
 
 ## Installation
@@ -21,12 +23,20 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 pip install megobari
 ```
 
+With voice message support:
+
+```bash
+pip install megobari[voice]
+```
+
 Or from source:
 
 ```bash
 git clone https://github.com/emakarov/megobari
 cd megobari
 uv sync
+# For voice support:
+uv pip install faster-whisper
 ```
 
 ### Prerequisites
@@ -124,6 +134,7 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 | `/stream on\|off` | Toggle streaming responses |
 | `/permissions <mode>` | Set permission mode |
 | `/file <path>` | Send a file to Telegram |
+| `/restart` | Restart the bot process |
 | `/help` | Show all commands |
 
 ### Permission modes
@@ -152,6 +163,37 @@ Each session maintains its own:
 - Permission mode
 
 Session data is persisted to `.megobari/sessions/sessions.json`.
+
+## Voice Messages
+
+Send a voice message in Telegram and the bot will transcribe it locally using [faster-whisper](https://github.com/SYSTRAN/faster-whisper), then forward the text to Claude.
+
+Requires the `voice` extra:
+
+```bash
+pip install megobari[voice]
+```
+
+The default model is `small` (~150MB, downloaded on first use). Configure via `Config(whisper_model="tiny")` or set in code. Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
+
+Transcription runs on CPU (int8 quantization) — no GPU needed.
+
+## Action Protocol
+
+Claude can trigger bot actions by embedding fenced code blocks in responses:
+
+````
+```megobari
+{"action": "send_file", "path": "/absolute/path/to/file.pdf", "caption": "optional"}
+```
+````
+
+The bot parses these blocks, executes the actions, and strips them from the displayed text.
+
+| Action | Fields | Description |
+|--------|--------|-------------|
+| `send_file` | `path` (required), `caption` (optional) | Send a file to the user |
+| `restart` | — | Restart the bot process |
 
 ## Plugin Marketplace
 
@@ -216,6 +258,8 @@ src/megobari/
   session.py               # Session dataclass + manager
   formatting.py            # Formatter ABC (Telegram HTML, plain text)
   message_utils.py         # Message splitting, formatting helpers
+  actions.py               # Action protocol (send_file, restart)
+  voice.py                 # Voice transcription (optional dep)
 tests/
 ```
 
