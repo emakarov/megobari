@@ -1032,6 +1032,214 @@ class TestHandleMessageActions:
         assert any_tool
 
 
+class TestHandlePhoto:
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_photo_saved_and_forwarded(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_photo
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = None
+
+        # Mock photo object
+        photo_file = AsyncMock()
+        photo_file.file_path = "photos/file_123.jpg"
+        photo_file.download_to_drive = AsyncMock()
+        photo_size = MagicMock()
+        photo_size.get_file = AsyncMock(return_value=photo_file)
+        update.message.photo = [MagicMock(), photo_size]  # [-1] = highest res
+
+        ctx = _make_context(session_manager)
+
+        await handle_photo(update, ctx)
+
+        # Should download to session cwd
+        expected_path = str(tmp_path / "photo_42.jpg")
+        photo_file.download_to_drive.assert_called_once_with(expected_path)
+
+        # Should call _process_prompt with file path
+        mock_process.assert_called_once()
+        prompt = mock_process.call_args[0][0]
+        assert "photo_42.jpg" in prompt
+        assert "Please look at the image" in prompt
+
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_photo_with_caption(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_photo
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = "What is this?"
+
+        photo_file = AsyncMock()
+        photo_file.file_path = "photos/file_123.jpg"
+        photo_file.download_to_drive = AsyncMock()
+        photo_size = MagicMock()
+        photo_size.get_file = AsyncMock(return_value=photo_file)
+        update.message.photo = [photo_size]
+
+        ctx = _make_context(session_manager)
+
+        await handle_photo(update, ctx)
+
+        prompt = mock_process.call_args[0][0]
+        assert "What is this?" in prompt
+
+    async def test_photo_no_session(self, session_manager):
+        from megobari.bot import handle_photo
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+
+        await handle_photo(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "No active session" in text
+
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_photo_error_handling(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_photo
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = None
+
+        photo_size = MagicMock()
+        photo_size.get_file = AsyncMock(side_effect=Exception("download failed"))
+        update.message.photo = [photo_size]
+
+        ctx = _make_context(session_manager)
+
+        await handle_photo(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Something went wrong with photo" in text
+        # Reaction should be cleared
+        last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
+        assert last_reaction[1]["reaction"] is None
+
+
+class TestHandleDocument:
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_document_saved_and_forwarded(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_document
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = None
+
+        doc_file = AsyncMock()
+        doc_file.download_to_drive = AsyncMock()
+        doc = MagicMock()
+        doc.get_file = AsyncMock(return_value=doc_file)
+        doc.file_name = "report.pdf"
+        update.message.document = doc
+
+        ctx = _make_context(session_manager)
+
+        await handle_document(update, ctx)
+
+        expected_path = str(tmp_path / "report.pdf")
+        doc_file.download_to_drive.assert_called_once_with(expected_path)
+
+        mock_process.assert_called_once()
+        prompt = mock_process.call_args[0][0]
+        assert "report.pdf" in prompt
+        assert "Please examine the file" in prompt
+
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_document_with_caption(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_document
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = "Please analyze"
+
+        doc_file = AsyncMock()
+        doc_file.download_to_drive = AsyncMock()
+        doc = MagicMock()
+        doc.get_file = AsyncMock(return_value=doc_file)
+        doc.file_name = "data.csv"
+        update.message.document = doc
+
+        ctx = _make_context(session_manager)
+
+        await handle_document(update, ctx)
+
+        prompt = mock_process.call_args[0][0]
+        assert "Please analyze" in prompt
+
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_document_no_filename(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_document
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = None
+
+        doc_file = AsyncMock()
+        doc_file.download_to_drive = AsyncMock()
+        doc = MagicMock()
+        doc.get_file = AsyncMock(return_value=doc_file)
+        doc.file_name = None
+        update.message.document = doc
+
+        ctx = _make_context(session_manager)
+
+        await handle_document(update, ctx)
+
+        expected_path = str(tmp_path / "document_42")
+        doc_file.download_to_drive.assert_called_once_with(expected_path)
+
+    async def test_document_no_session(self, session_manager):
+        from megobari.bot import handle_document
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+
+        await handle_document(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "No active session" in text
+
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    async def test_document_error_handling(self, mock_process, session_manager, tmp_path):
+        from megobari.bot import handle_document
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        update.message.message_id = 42
+        update.message.caption = None
+
+        doc = MagicMock()
+        doc.get_file = AsyncMock(side_effect=Exception("download failed"))
+        doc.file_name = "test.pdf"
+        update.message.document = doc
+
+        ctx = _make_context(session_manager)
+
+        await handle_document(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Something went wrong with document" in text
+        # Reaction should be cleared
+        last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
+        assert last_reaction[1]["reaction"] is None
+
+
 class TestSendTypingPeriodically:
     async def test_typing_cancelled(self):
         import asyncio

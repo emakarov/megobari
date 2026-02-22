@@ -344,6 +344,77 @@ class TestRestartMarker:
         assert not marker.exists()  # cleaned up
 
 
+class TestSendPhotoAction:
+    @pytest.mark.asyncio
+    async def test_send_photo_success(self, tmp_path):
+        f = tmp_path / "image.png"
+        f.write_bytes(b"PNG data")
+
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_photo", "path": str(f)}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        bot.send_photo.assert_called_once()
+        call_kwargs = bot.send_photo.call_args[1]
+        assert call_kwargs["chat_id"] == 123
+
+    @pytest.mark.asyncio
+    async def test_send_photo_with_caption(self, tmp_path):
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"JPEG data")
+
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_photo", "path": str(f), "caption": "Nice pic"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        call_kwargs = bot.send_photo.call_args[1]
+        assert call_kwargs["caption"] == "Nice pic"
+
+    @pytest.mark.asyncio
+    async def test_send_photo_not_found(self):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_photo", "path": "/nonexistent/image.png"}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "not found" in errors[0]
+        bot.send_photo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_photo_missing_path(self):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "send_photo"}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "missing" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_send_photo_exception(self, tmp_path):
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"data")
+
+        bot = AsyncMock()
+        bot.send_photo.side_effect = Exception("Telegram error")
+        errors = await execute_actions(
+            [{"action": "send_photo", "path": str(f)}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "failed" in errors[0]
+
+
 class TestDoRestart:
     @patch("megobari.actions.os.execv")
     def test_calls_execv(self, mock_execv):

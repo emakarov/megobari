@@ -280,6 +280,79 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _do_restart()
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming photos: save to session cwd and forward path to Claude."""
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+    caption = update.message.caption or ""
+
+    # Get highest resolution photo
+    photo = update.message.photo[-1]
+
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+
+    try:
+        photo_file = await photo.get_file()
+        ext = Path(photo_file.file_path).suffix if photo_file.file_path else ".jpg"
+        filename = f"photo_{message_id}{ext}"
+        save_path = Path(session.cwd) / filename
+        await photo_file.download_to_drive(str(save_path))
+
+        prompt = f"The user sent a photo saved at: {save_path}"
+        if caption:
+            prompt += f"\nCaption: {caption}"
+        prompt += "\nPlease look at the image and respond."
+
+        await _process_prompt(prompt, update, context)
+
+    except Exception as e:
+        logger.exception("Error handling photo")
+        await _reply(update, f"Something went wrong with photo: {e}")
+    finally:
+        await _set_reaction(context.bot, chat_id, message_id, None)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming documents: save to session cwd and forward path to Claude."""
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+    caption = update.message.caption or ""
+    doc = update.message.document
+
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+
+    try:
+        doc_file = await doc.get_file()
+        filename = doc.file_name or f"document_{message_id}"
+        save_path = Path(session.cwd) / filename
+        await doc_file.download_to_drive(str(save_path))
+
+        prompt = f"The user sent a file saved at: {save_path}"
+        if caption:
+            prompt += f"\nCaption: {caption}"
+        prompt += "\nPlease examine the file and respond."
+
+        await _process_prompt(prompt, update, context)
+
+    except Exception as e:
+        logger.exception("Error handling document")
+        await _reply(update, f"Something went wrong with document: {e}")
+    finally:
+        await _set_reaction(context.bot, chat_id, message_id, None)
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming voice messages: transcribe and send to Claude."""
     try:
@@ -640,6 +713,18 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
         MessageHandler(
             filters.VOICE & user_filter,
             handle_voice,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & user_filter,
+            handle_photo,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.Document.ALL & user_filter,
+            handle_document,
         )
     )
 

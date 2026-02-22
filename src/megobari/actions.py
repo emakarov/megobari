@@ -73,6 +73,10 @@ async def execute_actions(
             err = await _action_send_file(action, bot, chat_id)
             if err:
                 errors.append(err)
+        elif action_type == "send_photo":
+            err = await _action_send_photo(action, bot, chat_id)
+            if err:
+                errors.append(err)
         elif action_type == "restart":
             await _action_restart(bot, chat_id)
         else:
@@ -101,6 +105,30 @@ async def _action_send_file(action: dict, bot, chat_id: int) -> str | None:
             await bot.send_document(chat_id=chat_id, **kwargs)
     except Exception as e:
         return f"send_file: failed to send {resolved.name}: {e}"
+
+    return None
+
+
+async def _action_send_photo(action: dict, bot, chat_id: int) -> str | None:
+    """Execute a send_photo action. Returns error string or None."""
+    raw_path = action.get("path")
+    if not raw_path:
+        return "send_photo: missing 'path'"
+
+    resolved = Path(raw_path).expanduser().resolve()
+    if not resolved.is_file():
+        return f"send_photo: file not found: {resolved}"
+
+    caption = action.get("caption")
+
+    try:
+        with open(resolved, "rb") as f:
+            kwargs: dict = {"photo": f}
+            if caption:
+                kwargs["caption"] = caption
+            await bot.send_photo(chat_id=chat_id, **kwargs)
+    except Exception as e:
+        return f"send_photo: failed to send {resolved.name}: {e}"
 
     return None
 

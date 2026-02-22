@@ -41,10 +41,18 @@ _BASE_SYSTEM_PROMPT = (
     "You can add an optional \"caption\" field. "
     "The bot will send the file and strip the block from your message. "
     "Use absolute paths only.\n\n"
+    "To send a photo/image (displayed inline in Telegram), use:\n"
+    "```megobari\n"
+    '{"action": "send_photo", "path": "/absolute/path/to/image.png"}\n'
+    "```\n"
+    "You can add an optional \"caption\" field.\n\n"
     "To restart the bot (e.g. after code changes), embed:\n"
     "```megobari\n"
     '{"action": "restart"}\n'
-    "```"
+    "```\n\n"
+    "When the user sends a photo or document via Telegram, it is automatically "
+    "saved to the session working directory and you receive the file path. "
+    "Use the Read tool to examine the file."
 )
 
 
