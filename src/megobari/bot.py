@@ -15,6 +15,7 @@ from megobari.actions import execute_actions, parse_actions
 from megobari.claude_bridge import send_to_claude
 from megobari.config import Config
 from megobari.formatting import Formatter, TelegramFormatter
+from megobari.markdown_html import markdown_to_html
 from megobari.message_utils import (
     format_help,
     format_session_info,
@@ -548,10 +549,16 @@ class StreamingAccumulator:
     async def _do_edit(self) -> None:
         display = self.accumulated[:4096]
         try:
-            await self.message.edit_text(display)
+            rendered = markdown_to_html(display)
+            await self.message.edit_text(rendered, parse_mode="HTML")
             self.last_edit_len = len(self.accumulated)
         except Exception:
-            pass  # ignore edit failures (e.g., text unchanged)
+            # Fallback to plain text if HTML parsing fails
+            try:
+                await self.message.edit_text(display)
+                self.last_edit_len = len(self.accumulated)
+            except Exception:
+                pass  # ignore edit failures (e.g., text unchanged)
 
     async def finalize(self) -> str:
         """Finalize streaming and return accumulated text."""
@@ -649,19 +656,29 @@ async def _process_prompt(
             if actions and accumulator.message and cleaned_text:
                 if len(cleaned_text) <= 4096:
                     try:
-                        await accumulator.message.edit_text(cleaned_text)
+                        rendered = markdown_to_html(cleaned_text)
+                        await accumulator.message.edit_text(
+                            rendered, parse_mode="HTML",
+                        )
                     except Exception:
-                        pass
+                        try:
+                            await accumulator.message.edit_text(cleaned_text)
+                        except Exception:
+                            pass
                 else:
                     try:
                         await accumulator.message.delete()
                     except Exception:
                         pass
                     for chunk in split_message(cleaned_text):
-                        await _reply(update, chunk)
+                        await _reply(
+                            update, markdown_to_html(chunk), formatted=True,
+                        )
             elif len(full_text) > 4096:
                 for chunk in split_message(full_text):
-                    await _reply(update, chunk)
+                    await _reply(
+                        update, markdown_to_html(chunk), formatted=True,
+                    )
         else:
             # Non-streaming: show tool activity in a status message
             status_msg = None
@@ -702,14 +719,15 @@ async def _process_prompt(
 
             if tool_uses:
                 summary = format_tool_summary(tool_uses, fmt)
-                # Combine summary + escaped response in one HTML message
-                escaped = fmt.escape(response_text)
-                combined = f"{summary}\n\n{escaped}"
+                rendered = markdown_to_html(response_text)
+                combined = f"{summary}\n\n{rendered}"
                 for chunk in split_message(combined):
                     await _reply(update, chunk, formatted=True)
             else:
                 for chunk in split_message(response_text):
-                    await _reply(update, chunk)
+                    await _reply(
+                        update, markdown_to_html(chunk), formatted=True,
+                    )
 
         # Update session
         if new_session_id:
