@@ -30,6 +30,7 @@ class Config:
     allowed_username: str | None = None
     working_dir: str = field(default_factory=os.getcwd)
     sessions_dir: Path | None = None
+    whisper_model: str = "small"
 
     def __post_init__(self):
         """Set default sessions_dir based on working_dir if not provided."""

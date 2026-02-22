@@ -40,7 +40,11 @@ _BASE_SYSTEM_PROMPT = (
     "```\n"
     "You can add an optional \"caption\" field. "
     "The bot will send the file and strip the block from your message. "
-    "Use absolute paths only."
+    "Use absolute paths only.\n\n"
+    "To restart the bot (e.g. after code changes), embed:\n"
+    "```megobari\n"
+    '{"action": "restart"}\n'
+    "```"
 )
 
 

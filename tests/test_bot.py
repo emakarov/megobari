@@ -574,6 +574,21 @@ class TestCmdFile:
         assert "Failed to send" in text
 
 
+class TestCmdRestart:
+    @patch("megobari.actions._do_restart")
+    async def test_restart_sends_message_and_restarts(self, mock_restart):
+        from megobari.bot import cmd_restart
+
+        update = _make_update()
+        ctx = _make_context(MagicMock())
+
+        await cmd_restart(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Restarting" in text
+        mock_restart.assert_called_once()
+
+
 class TestCmdHelp:
     async def test_help(self, session_manager):
         from megobari.bot import cmd_help

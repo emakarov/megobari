@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -254,3 +254,48 @@ class TestExecuteActions:
         )
         assert errors == []
         bot.send_document.assert_called_once()
+
+
+class TestRestartAction:
+    @pytest.mark.asyncio
+    @patch("megobari.actions._do_restart")
+    async def test_restart_sends_message_and_restarts(self, mock_restart):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "restart"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        bot.send_message.assert_called_once()
+        call_kwargs = bot.send_message.call_args[1]
+        assert call_kwargs["chat_id"] == 123
+        assert "Restarting" in call_kwargs["text"]
+        mock_restart.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("megobari.actions._do_restart")
+    async def test_restart_continues_on_message_failure(self, mock_restart):
+        bot = AsyncMock()
+        bot.send_message.side_effect = Exception("network error")
+        errors = await execute_actions(
+            [{"action": "restart"}],
+            bot,
+            chat_id=123,
+        )
+        assert errors == []
+        # Should still restart even if message fails
+        mock_restart.assert_called_once()
+
+
+class TestDoRestart:
+    @patch("megobari.actions.os.execv")
+    def test_calls_execv(self, mock_execv):
+        import sys
+
+        from megobari.actions import _do_restart
+
+        _do_restart()
+        mock_execv.assert_called_once_with(
+            sys.executable, [sys.executable] + sys.argv
+        )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
 
 from telegram import Update
@@ -269,6 +270,79 @@ async def cmd_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, f"Failed to send file: {e}")
 
 
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /restart command to restart the bot process."""
+    from megobari.actions import _do_restart
+
+    await _reply(update, "🔄 Restarting...")
+    _do_restart()
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming voice messages: transcribe and send to Claude."""
+    try:
+        from megobari.voice import INSTALL_HINT, get_transcriber, is_available
+    except ImportError:
+        await _reply(update, "⚠️ Voice support requires faster-whisper.\n"
+                     "Install with: pip install megobari[voice]")
+        return
+
+    if not is_available():
+        await _reply(update, f"⚠️ {INSTALL_HINT}")
+        return
+
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    config: Config = context.bot_data.get("config")
+    model_size = config.whisper_model if config else "small"
+
+    voice = update.message.voice
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+
+    # React with eyes to show we're working
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+
+    tmp_path = None
+    try:
+        # Download voice file to temp .ogg
+        voice_file = await voice.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await voice_file.download_to_drive(tmp_path)
+
+        # Transcribe (run in thread to avoid blocking the event loop)
+        transcriber = get_transcriber(model_size)
+        transcription = await asyncio.to_thread(transcriber.transcribe, tmp_path)
+
+        if not transcription.strip():
+            await _reply(update, "Could not transcribe voice message.")
+            return
+
+        # Show transcription
+        await _reply(update, f"\U0001f3a4 {transcription}")
+
+        # Now process as regular text message
+        update.message.text = transcription
+        await handle_message(update, context)
+
+    except Exception as e:
+        logger.exception("Error handling voice message")
+        await _reply(update, f"Something went wrong with voice: {e}")
+    finally:
+        await _set_reaction(context.bot, chat_id, message_id, None)
+        # Clean up temp file
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command to display help text."""
     await _reply(update, format_help(fmt), formatted=True)
@@ -518,6 +592,7 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     """Create and configure the Telegram application with command handlers."""
     app = Application.builder().token(config.bot_token).build()
     app.bot_data["session_manager"] = session_manager
+    app.bot_data["config"] = config
 
     if config.allowed_user_id is not None:
         user_filter = filters.User(user_id=config.allowed_user_id)
@@ -541,10 +616,17 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("stream", cmd_stream, filters=user_filter))
     app.add_handler(CommandHandler("permissions", cmd_permissions, filters=user_filter))
     app.add_handler(CommandHandler("current", cmd_current, filters=user_filter))
+    app.add_handler(CommandHandler("restart", cmd_restart, filters=user_filter))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & user_filter,
             handle_message,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.VOICE & user_filter,
+            handle_voice,
         )
     )
 

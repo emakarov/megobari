@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,8 @@ async def execute_actions(
             err = await _action_send_file(action, bot, chat_id)
             if err:
                 errors.append(err)
+        elif action_type == "restart":
+            await _action_restart(bot, chat_id)
         else:
             logger.warning("Unknown action type: %s", action_type)
 
@@ -99,3 +103,18 @@ async def _action_send_file(action: dict, bot, chat_id: int) -> str | None:
         return f"send_file: failed to send {resolved.name}: {e}"
 
     return None
+
+
+async def _action_restart(bot, chat_id: int) -> None:
+    """Restart the bot process via os.execv."""
+    logger.info("Restart action triggered — restarting bot process")
+    try:
+        await bot.send_message(chat_id=chat_id, text="🔄 Restarting...")
+    except Exception:
+        pass
+    _do_restart()
+
+
+def _do_restart() -> None:
+    """Re-exec the current process. Extracted for testability."""
+    os.execv(sys.executable, [sys.executable] + sys.argv)
