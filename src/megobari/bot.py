@@ -328,9 +328,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Show transcription
         await _reply(update, f"\U0001f3a4 {transcription}")
 
-        # Now process as regular text message
-        update.message.text = transcription
-        await handle_message(update, context)
+        # Process transcription as a prompt
+        await _process_prompt(transcription, update, context)
 
     except Exception as e:
         logger.exception("Error handling voice message")
@@ -459,6 +458,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # React with eyes to show we're working
     await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
 
+    try:
+        await _process_prompt(user_text, update, context)
+    finally:
+        await _set_reaction(context.bot, chat_id, message_id, None)
+
+
+async def _process_prompt(
+    user_text: str, update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Send a prompt to Claude and deliver the response. Used by both text and voice."""
+    sm = _get_sm(context)
+    session = sm.current
+    chat_id = update.effective_chat.id
+
     # Start typing indicator
     typing_task = asyncio.create_task(
         _send_typing_periodically(chat_id, context.bot)
@@ -571,8 +584,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await typing_task
         except asyncio.CancelledError:
             pass
-        # Remove the eyes reaction when done
-        await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 # -- Application factory --

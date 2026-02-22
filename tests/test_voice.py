@@ -151,13 +151,13 @@ def _make_voice_update():
 
 
 class TestHandleVoice:
-    @patch("megobari.bot.handle_message", new_callable=AsyncMock)
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
     async def test_voice_transcribe_and_forward(
         self, mock_to_thread, mock_get_trans, mock_avail,
-        mock_handle_msg, session_manager
+        mock_process, session_manager
     ):
         from megobari.bot import handle_voice
         from megobari.config import Config
@@ -181,8 +181,8 @@ class TestHandleVoice:
         any_transcription = any("Hello from voice" in str(c) for c in reply_calls)
         assert any_transcription
 
-        # Should forward to handle_message
-        mock_handle_msg.assert_called_once()
+        # Should forward to _process_prompt with transcription
+        mock_process.assert_called_once_with("Hello from voice", update, ctx)
 
         # Reaction should be set and cleared
         reaction_calls = ctx.bot.set_message_reaction.call_args_list
@@ -213,13 +213,13 @@ class TestHandleVoice:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
-    @patch("megobari.bot.handle_message", new_callable=AsyncMock)
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
     async def test_voice_empty_transcription(
         self, mock_to_thread, mock_get_trans, mock_avail,
-        mock_handle_msg, session_manager
+        mock_process, session_manager
     ):
         from megobari.bot import handle_voice
         from megobari.config import Config
@@ -240,15 +240,15 @@ class TestHandleVoice:
 
         text = update.message.reply_text.call_args[0][0]
         assert "Could not transcribe" in text
-        mock_handle_msg.assert_not_called()
+        mock_process.assert_not_called()
 
-    @patch("megobari.bot.handle_message", new_callable=AsyncMock)
+    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
     async def test_voice_uses_config_model(
         self, mock_to_thread, mock_get_trans, mock_avail,
-        mock_handle_msg, session_manager
+        mock_process, session_manager
     ):
         from megobari.bot import handle_voice
         from megobari.config import Config
