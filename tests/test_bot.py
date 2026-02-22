@@ -593,6 +593,117 @@ class TestCmdRestart:
         assert (tmp_path / "restart_notify.json").exists()
 
 
+class TestCmdRelease:
+    async def test_no_args(self, session_manager):
+        from megobari.bot import cmd_release
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+
+        await cmd_release(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_invalid_version(self, session_manager):
+        from megobari.bot import cmd_release
+
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["abc"])
+
+        await cmd_release(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid version" in text
+
+    async def test_no_pyproject(self, session_manager, tmp_path):
+        from megobari.bot import cmd_release
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["1.0.0"])
+
+        await cmd_release(update, ctx)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    @patch("subprocess.run")
+    async def test_successful_release(self, mock_run, session_manager, tmp_path):
+        from megobari.bot import cmd_release
+
+        # Create a minimal pyproject.toml
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "test"\nversion = "0.1.0"\n')
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["0.2.0"])
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        await cmd_release(update, ctx)
+
+        # Version should be updated in file
+        assert 'version = "0.2.0"' in pyproject.read_text()
+
+        # Should have run git commands
+        assert mock_run.call_count == 5  # add, commit, tag, push, push --tags
+        git_cmds = [call[0][0] for call in mock_run.call_args_list]
+        assert git_cmds[0] == ["git", "add", "pyproject.toml"]
+        assert git_cmds[1] == ["git", "commit", "-m", "Release v0.2.0"]
+        assert git_cmds[2] == ["git", "tag", "v0.2.0"]
+        assert git_cmds[3] == ["git", "push"]
+        assert git_cmds[4] == ["git", "push", "--tags"]
+
+        # Success message
+        replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+        assert any("Released v0.2.0" in r for r in replies)
+
+    @patch("subprocess.run")
+    async def test_git_failure(self, mock_run, session_manager, tmp_path):
+        import subprocess
+
+        from megobari.bot import cmd_release
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "test"\nversion = "0.1.0"\n')
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["0.2.0"])
+
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "git", stderr="fatal: not a git repo"
+        )
+
+        await cmd_release(update, ctx)
+
+        replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+        assert any("failed" in r for r in replies)
+
+    @patch("subprocess.run")
+    async def test_strips_v_prefix(self, mock_run, session_manager, tmp_path):
+        from megobari.bot import cmd_release
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "test"\nversion = "0.1.0"\n')
+
+        session_manager.create("s")
+        session_manager.get("s").cwd = str(tmp_path)
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["v0.3.0"])
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        await cmd_release(update, ctx)
+
+        assert 'version = "0.3.0"' in pyproject.read_text()
+
+
 class TestCmdHelp:
     async def test_help(self, session_manager):
         from megobari.bot import cmd_help

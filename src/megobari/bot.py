@@ -280,6 +280,74 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _do_restart()
 
 
+async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /release command to bump version, tag, push, and trigger PyPI publish."""
+    import re
+    import subprocess
+
+    if not context.args:
+        await _reply(update, "Usage: /release <version>\nExample: /release 0.2.0")
+        return
+
+    version = context.args[0].lstrip("v")
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        await _reply(update, f"Invalid version format: {version}\nExpected: X.Y.Z")
+        return
+
+    tag = f"v{version}"
+    sm = _get_sm(context)
+    session = sm.current
+    project_root = session.cwd if session else str(Path.cwd())
+    pyproject = Path(project_root) / "pyproject.toml"
+
+    if not pyproject.is_file():
+        await _reply(update, f"pyproject.toml not found in {project_root}")
+        return
+
+    await _reply(update, f"📦 Releasing {tag}...")
+
+    try:
+        # Update version in pyproject.toml
+        content = pyproject.read_text()
+        new_content = re.sub(
+            r'^version\s*=\s*"[^"]*"',
+            f'version = "{version}"',
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if new_content == content:
+            await _reply(update, "⚠️ Could not find version field in pyproject.toml")
+            return
+        pyproject.write_text(new_content)
+
+        # Git commit, tag, push
+        def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd, cwd=project_root, capture_output=True, text=True, check=True
+            )
+
+        _run(["git", "add", "pyproject.toml"])
+        _run(["git", "commit", "-m", f"Release {tag}"])
+        _run(["git", "tag", tag])
+        _run(["git", "push"])
+        _run(["git", "push", "--tags"])
+
+        await _reply(
+            update,
+            f"✅ Released {tag}\n"
+            f"• Version bumped to {version}\n"
+            f"• Tag {tag} pushed\n"
+            f"• GitHub Actions will publish to PyPI",
+        )
+
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else str(e)
+        await _reply(update, f"❌ Release failed:\n{stderr}")
+    except Exception as e:
+        await _reply(update, f"❌ Release failed: {e}")
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming photos: save to session cwd and forward path to Claude."""
     sm = _get_sm(context)
@@ -703,6 +771,7 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("permissions", cmd_permissions, filters=user_filter))
     app.add_handler(CommandHandler("current", cmd_current, filters=user_filter))
     app.add_handler(CommandHandler("restart", cmd_restart, filters=user_filter))
+    app.add_handler(CommandHandler("release", cmd_release, filters=user_filter))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & user_filter,

@@ -117,6 +117,7 @@ def format_help(fmt: Formatter | None = None) -> str:
         (f"/permissions {fmt.code('<mode>')}", "Set permission mode"),
         (f"/file {fmt.code('<path>')}", "Send a file to Telegram"),
         ("/restart", "Restart the bot process"),
+        (f"/release {fmt.code('<version>')}", "Bump version, tag & publish to PyPI"),
         ("/help", "Show this message"),
     ]
     lines = [title, ""]
