@@ -1,6 +1,6 @@
 [project]
 name = "megobari"
-version = "0.1.0"
+version = "0.1.1"
 description = "Telegram bot bridging to Claude Code — use as CLI or embed as a library"
 requires-python = ">=3.10"
 license = "MIT"
