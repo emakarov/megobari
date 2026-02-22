@@ -272,8 +272,10 @@ async def cmd_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /restart command to restart the bot process."""
-    from megobari.actions import _do_restart
+    from megobari.actions import _do_restart, save_restart_marker
 
+    chat_id = update.effective_chat.id
+    save_restart_marker(chat_id)
     await _reply(update, "🔄 Restarting...")
     _do_restart()
 
@@ -629,5 +631,20 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
             handle_voice,
         )
     )
+
+    async def _post_init(application: Application) -> None:
+        """Send restart notification if we're coming back from a restart."""
+        from megobari.actions import load_restart_marker
+
+        chat_id = load_restart_marker()
+        if chat_id:
+            try:
+                await application.bot.send_message(
+                    chat_id=chat_id, text="✅ Bot restarted successfully."
+                )
+            except Exception:
+                logger.warning("Failed to send restart notification")
+
+    app.post_init = _post_init
 
     return app

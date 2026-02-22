@@ -576,9 +576,11 @@ class TestCmdFile:
 
 class TestCmdRestart:
     @patch("megobari.actions._do_restart")
-    async def test_restart_sends_message_and_restarts(self, mock_restart):
+    async def test_restart_sends_message_and_restarts(self, mock_restart, tmp_path):
+        import megobari.actions as actions_mod
         from megobari.bot import cmd_restart
 
+        actions_mod._RESTART_MARKER = tmp_path / "restart_notify.json"
         update = _make_update()
         ctx = _make_context(MagicMock())
 
@@ -587,6 +589,8 @@ class TestCmdRestart:
         text = update.message.reply_text.call_args[0][0]
         assert "Restarting" in text
         mock_restart.assert_called_once()
+        # Should have saved restart marker
+        assert (tmp_path / "restart_notify.json").exists()
 
 
 class TestCmdHelp:
@@ -1089,6 +1093,43 @@ class TestCreateApplication:
         assert app is not None
         # In discovery mode, should have exactly 1 handler (catch-all)
         assert len(app.handlers[0]) == 1
+
+    def test_post_init_set(self, session_manager):
+        from megobari.bot import create_application
+        from megobari.config import Config
+
+        config = Config(bot_token="fake-token", allowed_user_id=12345)
+        app = create_application(session_manager, config)
+        assert app.post_init is not None
+
+    @patch("megobari.actions.load_restart_marker", return_value=12345)
+    async def test_post_init_sends_notification(self, mock_load, session_manager):
+        from megobari.bot import create_application
+        from megobari.config import Config
+
+        config = Config(bot_token="fake-token", allowed_user_id=12345)
+        app = create_application(session_manager, config)
+        app.bot = AsyncMock()
+
+        await app.post_init(app)
+
+        app.bot.send_message.assert_called_once()
+        call_kwargs = app.bot.send_message.call_args[1]
+        assert call_kwargs["chat_id"] == 12345
+        assert "restarted" in call_kwargs["text"]
+
+    @patch("megobari.actions.load_restart_marker", return_value=None)
+    async def test_post_init_no_marker(self, mock_load, session_manager):
+        from megobari.bot import create_application
+        from megobari.config import Config
+
+        config = Config(bot_token="fake-token", allowed_user_id=12345)
+        app = create_application(session_manager, config)
+        app.bot = AsyncMock()
+
+        await app.post_init(app)
+
+        app.bot.send_message.assert_not_called()
 
 
 class TestStreamingAccumulator:

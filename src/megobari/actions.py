@@ -105,9 +105,39 @@ async def _action_send_file(action: dict, bot, chat_id: int) -> str | None:
     return None
 
 
+_RESTART_MARKER = Path(".megobari") / "restart_notify.json"
+
+
+def save_restart_marker(chat_id: int) -> None:
+    """Save chat_id so the bot can notify after restart."""
+    _RESTART_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _RESTART_MARKER.write_text(json.dumps({"chat_id": chat_id}))
+    logger.info("Restart marker saved for chat_id=%s", chat_id)
+
+
+def load_restart_marker() -> int | None:
+    """Load and delete restart marker. Returns chat_id or None."""
+    if not _RESTART_MARKER.is_file():
+        return None
+    try:
+        data = json.loads(_RESTART_MARKER.read_text())
+        chat_id = data.get("chat_id")
+        _RESTART_MARKER.unlink()
+        logger.info("Restart marker loaded: chat_id=%s", chat_id)
+        return chat_id
+    except Exception:
+        logger.warning("Failed to read restart marker")
+        try:
+            _RESTART_MARKER.unlink()
+        except Exception:
+            pass
+        return None
+
+
 async def _action_restart(bot, chat_id: int) -> None:
     """Restart the bot process via os.execv."""
     logger.info("Restart action triggered — restarting bot process")
+    save_restart_marker(chat_id)
     try:
         await bot.send_message(chat_id=chat_id, text="🔄 Restarting...")
     except Exception:

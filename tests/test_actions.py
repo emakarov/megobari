@@ -259,7 +259,10 @@ class TestExecuteActions:
 class TestRestartAction:
     @pytest.mark.asyncio
     @patch("megobari.actions._do_restart")
-    async def test_restart_sends_message_and_restarts(self, mock_restart):
+    async def test_restart_sends_message_and_restarts(self, mock_restart, tmp_path):
+        import megobari.actions as actions_mod
+
+        actions_mod._RESTART_MARKER = tmp_path / "restart_notify.json"
         bot = AsyncMock()
         errors = await execute_actions(
             [{"action": "restart"}],
@@ -275,7 +278,10 @@ class TestRestartAction:
 
     @pytest.mark.asyncio
     @patch("megobari.actions._do_restart")
-    async def test_restart_continues_on_message_failure(self, mock_restart):
+    async def test_restart_continues_on_message_failure(self, mock_restart, tmp_path):
+        import megobari.actions as actions_mod
+
+        actions_mod._RESTART_MARKER = tmp_path / "restart_notify.json"
         bot = AsyncMock()
         bot.send_message.side_effect = Exception("network error")
         errors = await execute_actions(
@@ -284,8 +290,58 @@ class TestRestartAction:
             chat_id=123,
         )
         assert errors == []
-        # Should still restart even if message fails
         mock_restart.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("megobari.actions._do_restart")
+    async def test_restart_saves_marker(self, mock_restart, tmp_path):
+        import json
+
+        import megobari.actions as actions_mod
+
+        marker = tmp_path / "restart_notify.json"
+        actions_mod._RESTART_MARKER = marker
+        bot = AsyncMock()
+        await execute_actions(
+            [{"action": "restart"}],
+            bot,
+            chat_id=42,
+        )
+        # Marker should have been written before _do_restart
+        assert marker.exists()
+        data = json.loads(marker.read_text())
+        assert data["chat_id"] == 42
+
+
+class TestRestartMarker:
+    def test_save_and_load(self, tmp_path):
+        import megobari.actions as actions_mod
+
+        marker = tmp_path / "restart_notify.json"
+        actions_mod._RESTART_MARKER = marker
+
+        actions_mod.save_restart_marker(12345)
+        assert marker.exists()
+
+        chat_id = actions_mod.load_restart_marker()
+        assert chat_id == 12345
+        assert not marker.exists()  # deleted after load
+
+    def test_load_no_marker(self, tmp_path):
+        import megobari.actions as actions_mod
+
+        actions_mod._RESTART_MARKER = tmp_path / "nonexistent.json"
+        assert actions_mod.load_restart_marker() is None
+
+    def test_load_corrupt_marker(self, tmp_path):
+        import megobari.actions as actions_mod
+
+        marker = tmp_path / "restart_notify.json"
+        marker.write_text("not json")
+        actions_mod._RESTART_MARKER = marker
+
+        assert actions_mod.load_restart_marker() is None
+        assert not marker.exists()  # cleaned up
 
 
 class TestDoRestart:
