@@ -203,26 +203,29 @@ Visit [docs](https://docs.com)."""
         assert "<blockquote>Note this</blockquote>" in result
         assert '<a href="https://docs.com">docs</a>' in result
 
-    def test_table_bold_header_and_middot_rows(self):
-        """Tables render as bold header + middot-separated rows."""
+    def test_table_pre_aligned(self):
+        """Tables render as <pre> with space-padded columns."""
         md = "| Col A | Col B |\n|-------|-------|\n| 1 | 2 |"
         result = markdown_to_html(md)
-        assert "<b>Col A · Col B</b>" in result
-        assert "1 · 2" in result
+        assert "<pre>" in result
+        assert "</pre>" in result
+        assert "Col A" in result
+        assert "Col B" in result
 
     def test_table_with_surrounding_text(self):
         md = "Before table:\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter table."
         result = markdown_to_html(md)
         assert "Before table:" in result
-        assert "<b>A · B</b>" in result
+        assert "<pre>" in result
         assert "After table." in result
 
     def test_table_multiple_rows(self):
         md = "| Name | Value |\n|------|-------|\n| a | 1 |\n| b | 2 |"
         result = markdown_to_html(md)
-        assert "<b>Name · Value</b>" in result
-        assert "a · 1" in result
-        assert "b · 2" in result
+        assert "<pre>" in result
+        assert "Name" in result
+        assert "a" in result
+        assert "b" in result
 
     def test_table_html_escaping(self):
         md = "| A & B | <C> |\n|-------|-----|\n| x | y |"
@@ -236,3 +239,13 @@ Visit [docs](https://docs.com)."""
         result = markdown_to_html(md)
         assert "OK" in result
         assert "**" not in result
+
+    def test_table_column_alignment(self):
+        """Columns should be space-padded for alignment."""
+        md = "| Name | Score |\n|------|-------|\n| Alice | 95 |\n| Bob | 8 |"
+        result = markdown_to_html(md)
+        # All rows inside <pre>
+        assert "<pre>" in result
+        # Check that shorter values are padded
+        assert "Alice" in result
+        assert "Bob" in result

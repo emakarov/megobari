@@ -12,7 +12,7 @@ Handles the subset of Markdown that Claude typically produces:
   - Ordered lists (1. 2. 3.)
   - ~~strikethrough~~          → <s>
   - --- / *** horizontal rules → em-dash line
-  - | tables |                 → bold header + middot rows
+  - | tables |                 → <pre> with aligned columns
 
 Uses only tags supported by Telegram Bot API ``parse_mode='HTML'``:
 <b>, <i>, <u>, <s>, <code>, <pre>, <a>, <blockquote>,
@@ -91,7 +91,7 @@ def _split_code_blocks(text: str) -> list[tuple[bool, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Markdown tables → <pre> blocks
+# Markdown tables → <pre> with aligned columns
 # ---------------------------------------------------------------------------
 
 # A table line: starts with |, contains at least one more |
@@ -146,11 +146,10 @@ def _split_tables(text: str) -> list[tuple[bool, str]]:
 
 
 def _render_table(table_lines: list[str]) -> str:
-    """Render Markdown table as bold header + middot-separated rows.
+    """Render Markdown table as a ``<pre>`` block with space-padded columns.
 
-    Telegram doesn't support HTML tables and ``<pre>`` wraps poorly on mobile,
-    so we render as compact text: bold header line, then one line per data row
-    with values separated by `` · ``.
+    Telegram doesn't support HTML tables, so we render inside ``<pre>`` with
+    monospace alignment.  No box-drawing characters — just spaces for padding.
     """
     rows: list[list[str]] = []
 
@@ -168,19 +167,24 @@ def _render_table(table_lines: list[str]) -> str:
     if not rows:
         return html.escape("\n".join(table_lines))
 
-    # First row is the header
-    header = rows[0]
-    data = rows[1:]
+    # Compute column widths
+    n_cols = max(len(r) for r in rows)
+    widths = [0] * n_cols
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < n_cols:
+                widths[i] = max(widths[i], len(cell))
 
-    header_escaped = [html.escape(c) for c in header]
-    header_line = f"<b>{' · '.join(header_escaped)}</b>"
+    # Format each row with space padding
+    formatted: list[str] = []
+    for row in rows:
+        parts = []
+        for i in range(n_cols):
+            cell = row[i] if i < len(row) else ""
+            parts.append(cell.ljust(widths[i]))
+        formatted.append("  ".join(parts))
 
-    output_lines = [header_line]
-    for row in data:
-        cells_escaped = [html.escape(c) for c in row]
-        output_lines.append(" · ".join(cells_escaped))
-
-    return "\n".join(output_lines)
+    return f"<pre>{html.escape(chr(10).join(formatted))}</pre>"
 
 
 # ---------------------------------------------------------------------------
