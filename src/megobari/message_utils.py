@@ -61,9 +61,15 @@ def format_session_info(
     ]
     if session.dirs:
         lines.append(line("Extra dirs", f"{len(session.dirs)} (/dirs to list)"))
+    thinking_val = session.thinking
+    if session.thinking == "enabled" and session.thinking_budget:
+        thinking_val = f"enabled ({session.thinking_budget:,} tokens)"
     lines += [
         line("Streaming", "on" if session.streaming else "off"),
         line("Permissions", session.permission_mode),
+        line("Model", session.model or "default"),
+        line("Thinking", thinking_val),
+        line("Effort", session.effort or "default"),
         line("Has context", "yes" if session.session_id else "no"),
         line("Created", session.created_at),
         line("Last used", session.last_used_at),
@@ -118,6 +124,17 @@ def format_help(fmt: Formatter | None = None) -> str:
         (f"/file {fmt.code('<path>')}", "Send a file to Telegram"),
         ("/restart", "Restart the bot process"),
         (f"/release {fmt.code('<version>')}", "Bump version, tag & publish to PyPI"),
+        (f"/persona {fmt.code('<sub>')}", "Manage personas (list, create, default, ...)"),
+        (f"/memory {fmt.code('<sub>')}", "Manage memories (list, set, get, delete)"),
+        (f"/summaries {fmt.code('[sub]')}", "View conversation summaries"),
+        (f"/model {fmt.code('[name]')}", "Switch model (sonnet/opus/haiku/off)"),
+        (f"/think {fmt.code('[mode]')}", "Control extended thinking (adaptive/on/off)"),
+        (f"/effort {fmt.code('[level]')}", "Set effort level (low/medium/high/max/off)"),
+        ("/usage", "Show session cost and stats"),
+        ("/context", "Show token usage and session config"),
+        ("/history", "Browse past conversations"),
+        ("/compact", "Summarize and reset context"),
+        ("/doctor", "Run health checks"),
         ("/help", "Show this message"),
     ]
     lines = [title, ""]

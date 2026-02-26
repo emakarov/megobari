@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from megobari.claude_bridge import QueryUsage
 from megobari.session import SessionManager
 
 
@@ -787,7 +788,7 @@ class TestHandleMessage:
     async def test_basic_response(self, mock_send, session_manager):
         from megobari.bot import handle_message
 
-        mock_send.return_value = ("Hello!", [], "sid-123")
+        mock_send.return_value = ("Hello!", [], "sid-123", QueryUsage())
         session_manager.create("s")
         update = _make_update()
         update.message.message_id = 99
@@ -812,6 +813,7 @@ class TestHandleMessage:
             "Done!",
             [("Bash", {"command": "ls"})],
             "sid-123",
+            QueryUsage(),
         )
         session_manager.create("s")
         update = _make_update()
@@ -827,7 +829,7 @@ class TestHandleMessage:
     async def test_updates_session_id(self, mock_send, session_manager):
         from megobari.bot import handle_message
 
-        mock_send.return_value = ("Hello!", [], "new-sid")
+        mock_send.return_value = ("Hello!", [], "new-sid", QueryUsage())
         session_manager.create("s")
         update = _make_update()
         update.message.message_id = 99
@@ -859,11 +861,14 @@ class TestHandleMessage:
     async def test_non_streaming_tool_status_message(self, mock_send, session_manager):
         from megobari.bot import handle_message
 
-        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+        async def fake_send(
+            prompt, session, on_text_chunk=None,
+            on_tool_use=None, recall_context=None,
+        ):
             if on_tool_use:
                 await on_tool_use("Read", {"file_path": "/a/b/foo.py"})
                 await on_tool_use("Bash", {"command": "ls"})
-            return ("Done!", [("Read", {"file_path": "/a/b/foo.py"})], "sid")
+            return ("Done!", [("Read", {"file_path": "/a/b/foo.py"})], "sid", QueryUsage())
 
         mock_send.side_effect = fake_send
         session_manager.create("s")
@@ -885,7 +890,7 @@ class TestHandleMessageStreaming:
     async def test_streaming_basic(self, mock_send, session_manager):
         from megobari.bot import handle_message
 
-        mock_send.return_value = ("Streamed!", [], "sid-s")
+        mock_send.return_value = ("Streamed!", [], "sid-s", QueryUsage())
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
@@ -910,6 +915,7 @@ class TestHandleMessageStreaming:
             "Done!",
             [("Bash", {"command": "ls"})],
             "sid-s",
+            QueryUsage(),
         )
         session_manager.create("s")
         session_manager.get("s").streaming = True
@@ -932,10 +938,13 @@ class TestHandleMessageStreaming:
 
         long_text = "word " * 2000  # well beyond 4096
 
-        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+        async def fake_send(
+            prompt, session, on_text_chunk=None,
+            on_tool_use=None, recall_context=None,
+        ):
             if on_text_chunk:
                 await on_text_chunk(long_text)
-            return (long_text, [], "sid-s")
+            return (long_text, [], "sid-s", QueryUsage())
 
         mock_send.side_effect = fake_send
         session_manager.create("s")
@@ -956,7 +965,7 @@ class TestHandleMessageStreaming:
     async def test_streaming_no_session_id_update(self, mock_send, session_manager):
         from megobari.bot import handle_message
 
-        mock_send.return_value = ("ok", [], None)
+        mock_send.return_value = ("ok", [], None, QueryUsage())
         session_manager.create("s")
         session_manager.get("s").streaming = True
         update = _make_update()
@@ -984,10 +993,13 @@ class TestHandleMessageStreaming:
             "Enjoy!"
         )
 
-        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+        async def fake_send(
+            prompt, session, on_text_chunk=None,
+            on_tool_use=None, recall_context=None,
+        ):
             if on_text_chunk:
                 await on_text_chunk(response_with_action)
-            return (response_with_action, [], "sid-s")
+            return (response_with_action, [], "sid-s", QueryUsage())
 
         mock_send.side_effect = fake_send
         mock_exec.return_value = []
@@ -1026,10 +1038,13 @@ class TestHandleMessageStreaming:
             "Done."
         )
 
-        async def fake_send(prompt, session, on_text_chunk=None, on_tool_use=None):
+        async def fake_send(
+            prompt, session, on_text_chunk=None,
+            on_tool_use=None, recall_context=None,
+        ):
             if on_text_chunk:
                 await on_text_chunk(response_with_action)
-            return (response_with_action, [], "sid-s")
+            return (response_with_action, [], "sid-s", QueryUsage())
 
         mock_send.side_effect = fake_send
         mock_exec.return_value = ["send_file: file not found: /tmp/x.pdf"]
@@ -1066,7 +1081,7 @@ class TestHandleMessageActions:
             "```\n"
             "Let me know if you need more."
         )
-        mock_send.return_value = (response_with_action, [], "sid-123")
+        mock_send.return_value = (response_with_action, [], "sid-123", QueryUsage())
         mock_exec.return_value = []
         session_manager.create("s")
         update = _make_update()
@@ -1097,7 +1112,7 @@ class TestHandleMessageActions:
             "```\n"
             "Here you go."
         )
-        mock_send.return_value = (response_with_action, [], "sid-123")
+        mock_send.return_value = (response_with_action, [], "sid-123", QueryUsage())
         mock_exec.return_value = ["send_file: file not found: /tmp/nope.pdf"]
         session_manager.create("s")
         update = _make_update()
@@ -1127,6 +1142,7 @@ class TestHandleMessageActions:
             response_with_action,
             [("Read", {"file_path": "/tmp/data.csv"})],
             "sid-123",
+            QueryUsage(),
         )
         mock_exec.return_value = []
         session_manager.create("s")

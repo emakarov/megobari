@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 PermissionMode = Literal["default", "acceptEdits", "bypassPermissions"]
 VALID_PERMISSION_MODES: set[str] = {"default", "acceptEdits", "bypassPermissions"}
 
+ThinkingMode = Literal["adaptive", "enabled", "disabled"]
+VALID_THINKING_MODES: set[str] = {"adaptive", "enabled", "disabled"}
+
+EffortLevel = Literal["low", "medium", "high", "max"]
+VALID_EFFORT_LEVELS: set[str] = {"low", "medium", "high", "max"}
+
+# Short aliases → full model names
+MODEL_ALIASES: dict[str, str] = {
+    "sonnet": "claude-sonnet-4-20250514",
+    "opus": "claude-opus-4-6",
+    "haiku": "claude-haiku-4-20250414",
+}
+VALID_MODELS: set[str] = set(MODEL_ALIASES.keys()) | set(MODEL_ALIASES.values())
+
 _LAUNCH_DIR = os.getcwd()
 
 
@@ -27,6 +41,10 @@ class Session:
     permission_mode: PermissionMode = "default"
     cwd: str = field(default_factory=lambda: _LAUNCH_DIR)
     dirs: list[str] = field(default_factory=list)
+    thinking: ThinkingMode = "adaptive"
+    thinking_budget: int | None = None
+    effort: EffortLevel | None = None
+    model: str | None = None
     created_at: str = field(default_factory=lambda: _now_iso())
     last_used_at: str = field(default_factory=lambda: _now_iso())
 

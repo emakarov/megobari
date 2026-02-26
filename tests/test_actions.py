@@ -426,3 +426,143 @@ class TestDoRestart:
         mock_execv.assert_called_once_with(
             sys.executable, [sys.executable] + sys.argv
         )
+
+
+# -- Memory action tests (need async DB) --
+
+
+@pytest.fixture(autouse=False)
+async def _init_test_db():
+    """Initialize an in-memory DB for memory action tests."""
+    from megobari.db import close_db, init_db
+
+    await init_db("sqlite+aiosqlite://")
+    yield
+    await close_db()
+
+
+class TestMemorySetAction:
+    @pytest.mark.asyncio
+    async def test_memory_set_success(self, _init_test_db):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
+            bot,
+            chat_id=123,
+            user_id=42,
+        )
+        assert errors == []
+
+        # Verify it was saved
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            mem = await repo.get_memory("prefs", "lang", user_id=42)
+            assert mem is not None
+            assert mem.content == "Georgian"
+
+    @pytest.mark.asyncio
+    async def test_memory_set_missing_fields(self, _init_test_db):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang"}],
+            bot,
+            chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "requires" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_memory_set_upsert(self, _init_test_db):
+        bot = AsyncMock()
+        # Set once
+        await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "English"}],
+            bot, chat_id=123, user_id=42,
+        )
+        # Update
+        await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
+            bot, chat_id=123, user_id=42,
+        )
+
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            mem = await repo.get_memory("prefs", "lang", user_id=42)
+            assert mem.content == "Georgian"
+
+
+class TestMemoryDeleteAction:
+    @pytest.mark.asyncio
+    async def test_memory_delete_success(self, _init_test_db):
+        bot = AsyncMock()
+        # Set first
+        await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
+            bot, chat_id=123, user_id=42,
+        )
+        # Delete
+        errors = await execute_actions(
+            [{"action": "memory_delete", "category": "prefs", "key": "lang"}],
+            bot, chat_id=123, user_id=42,
+        )
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_memory_delete_not_found(self, _init_test_db):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "memory_delete", "category": "prefs", "key": "nope"}],
+            bot, chat_id=123, user_id=42,
+        )
+        assert len(errors) == 1
+        assert "not found" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_memory_delete_missing_fields(self, _init_test_db):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "memory_delete", "category": "prefs"}],
+            bot, chat_id=123,
+        )
+        assert len(errors) == 1
+        assert "requires" in errors[0]
+
+
+class TestMemoryListAction:
+    @pytest.mark.asyncio
+    async def test_memory_list_empty(self, _init_test_db):
+        bot = AsyncMock()
+        errors = await execute_actions(
+            [{"action": "memory_list"}],
+            bot, chat_id=123, user_id=42,
+        )
+        assert errors == []
+        bot.send_message.assert_called_once()
+        assert "No memories" in bot.send_message.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_memory_list_with_data(self, _init_test_db):
+        bot = AsyncMock()
+        # Save some memories
+        await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
+            bot, chat_id=123, user_id=42,
+        )
+        await execute_actions(
+            [{"action": "memory_set", "category": "prefs", "key": "theme", "value": "dark"}],
+            bot, chat_id=123, user_id=42,
+        )
+        bot.reset_mock()
+
+        errors = await execute_actions(
+            [{"action": "memory_list", "category": "prefs"}],
+            bot, chat_id=123, user_id=42,
+        )
+        assert errors == []
+        text = bot.send_message.call_args[1]["text"]
+        assert "lang" in text
+        assert "theme" in text

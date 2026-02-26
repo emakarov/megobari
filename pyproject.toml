@@ -21,6 +21,8 @@ dependencies = [
     "python-telegram-bot>=22.0",
     "claude-agent-sdk>=0.1.30",
     "python-dotenv>=1.0.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]

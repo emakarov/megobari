@@ -14,7 +14,11 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 - **Client-agnostic formatting** — `Formatter` abstraction for future non-Telegram frontends
 - **Library API** — embed Megobari in your own Python project
 - **Voice messages** — send voice messages, transcribed locally via faster-whisper
-- **Action protocol** — Claude can send files and restart the bot via embedded action blocks
+- **Action protocol** — Claude can send files/photos and restart the bot via embedded action blocks
+- **Persistent memory** — Claude can save, recall, and delete long-term facts/preferences
+- **Conversation summaries** — automatic periodic summarization + manual `/compact` with short extract for efficient context injection
+- **Usage tracking** — per-query cost, tokens, duration tracked in SQLite with `/usage` and `/context` commands
+- **Model & reasoning controls** — `/model`, `/think`, `/effort` to tune Claude's behavior per session
 - **Plugin marketplace** — curated collection of Claude Code skills and MCP integrations
 
 ## Installation
@@ -121,6 +125,8 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 
 ### Commands
 
+**Session management**
+
 | Command | Description |
 |---|---|
 | `/new <name>` | Create a new session |
@@ -129,12 +135,35 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 | `/rename <old> <new>` | Rename a session |
 | `/delete <name>` | Delete a session |
 | `/current` | Show active session info |
+
+**Configuration**
+
+| Command | Description |
+|---|---|
 | `/cd <path>` | Change working directory |
 | `/dirs [add\|rm] <path>` | Manage extra directories |
 | `/stream on\|off` | Toggle streaming responses |
-| `/permissions <mode>` | Set permission mode |
+| `/permissions <mode>` | Set permission mode (`default`, `acceptEdits`, `bypassPermissions`) |
+| `/model [name]` | Switch model (`sonnet`, `opus`, `haiku`, or full name; `off` to reset) |
+| `/think [mode] [budget]` | Set thinking mode (`on`, `off`, `adaptive`) and optional token budget |
+| `/effort [level]` | Set reasoning effort (`low`, `medium`, `high`) |
+
+**Context & usage**
+
+| Command | Description |
+|---|---|
+| `/compact` | Summarize conversation and reset context window |
+| `/context` | Show token usage for current run and all-time |
+| `/usage` | Show cost and usage statistics |
+| `/history [all\|search\|stats]` | Browse conversation history |
+
+**Utilities**
+
+| Command | Description |
+|---|---|
 | `/file <path>` | Send a file to Telegram |
 | `/restart` | Restart the bot process |
+| `/doctor` | Run diagnostics (check deps, config, connectivity) |
 | `/help` | Show all commands |
 
 ### Permission modes
@@ -193,7 +222,22 @@ The bot parses these blocks, executes the actions, and strips them from the disp
 | Action | Fields | Description |
 |--------|--------|-------------|
 | `send_file` | `path` (required), `caption` (optional) | Send a file to the user |
+| `send_photo` | `path` (required), `caption` (optional) | Send an image inline |
 | `restart` | — | Restart the bot process |
+| `memory_set` | `category`, `key`, `value` | Save a persistent memory |
+| `memory_delete` | `category`, `key` | Delete a memory |
+| `memory_list` | `category` (optional) | List saved memories |
+
+## Persistence & Memory
+
+Megobari uses SQLite (at `~/.megobari/megobari.db`) to persist:
+
+- **Conversation summaries** — auto-generated every 20 messages + manual via `/compact`. Each summary has a short extract (one-line) used for token-efficient context injection, and a full detailed version stored for reference.
+- **Messages** — logged for summarization pipeline
+- **Memories** — long-term facts and preferences that Claude can save/recall across sessions via action blocks
+- **Usage records** — per-query cost, token counts, duration
+
+The recall system injects recent summaries (short extracts) and memories into the system prompt, giving Claude persistent context across conversation resets.
 
 ## Plugin Marketplace
 
@@ -253,13 +297,20 @@ plugins/                   # Curated skills and MCP configs
 src/megobari/
   __main__.py              # Entry point
   config.py                # Environment configuration
-  bot.py                   # Telegram handlers
+  bot.py                   # Telegram handlers & commands
   claude_bridge.py         # Agent SDK integration
   session.py               # Session dataclass + manager
   formatting.py            # Formatter ABC (Telegram HTML, plain text)
   message_utils.py         # Message splitting, formatting helpers
-  actions.py               # Action protocol (send_file, restart)
+  markdown_html.py         # Markdown to Telegram HTML converter
+  actions.py               # Action protocol (send_file, send_photo, restart, memory)
+  recall.py                # Context recall (summaries + memories → system prompt)
+  summarizer.py            # Auto-summarization pipeline
   voice.py                 # Voice transcription (optional dep)
+  db/
+    models.py              # SQLAlchemy models (User, Message, Summary, Memory, Usage)
+    repository.py          # Async CRUD operations
+    engine.py              # DB engine factory
 tests/
 ```
 
@@ -267,12 +318,16 @@ tests/
 
 ```
 Telegram  <-->  bot.py  <-->  claude_bridge.py  <-->  Claude Code CLI
-                  |                                        |
-             formatting.py                           Agent SDK
+                  |                |                        |
+             formatting.py    recall.py                Agent SDK
+                  |                |
+           message_utils.py   summarizer.py
+                  |                |
+             session.py        db/ (SQLite)
                   |
-           message_utils.py
-                  |
-             session.py  <-->  .megobari/sessions/sessions.json
+          sessions.json
 ```
 
 The `Formatter` abstraction decouples presentation from logic. Swap `TelegramFormatter` for another implementation to support Discord, Slack, CLI, etc.
+
+The recall system builds context from recent summaries (using short extracts for efficiency) and persistent memories, injecting them into the system prompt each turn.

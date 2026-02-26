@@ -59,6 +59,7 @@ async def execute_actions(
     actions: list[dict],
     bot,
     chat_id: int,
+    user_id: int | None = None,
 ) -> list[str]:
     """Execute a list of parsed actions.
 
@@ -79,6 +80,18 @@ async def execute_actions(
                 errors.append(err)
         elif action_type == "restart":
             await _action_restart(bot, chat_id)
+        elif action_type == "memory_set":
+            err = await _action_memory_set(action, user_id)
+            if err:
+                errors.append(err)
+        elif action_type == "memory_delete":
+            err = await _action_memory_delete(action, user_id)
+            if err:
+                errors.append(err)
+        elif action_type == "memory_list":
+            result = await _action_memory_list(action, bot, chat_id, user_id)
+            if result:
+                errors.append(result)
         else:
             logger.warning("Unknown action type: %s", action_type)
 
@@ -130,6 +143,90 @@ async def _action_send_photo(action: dict, bot, chat_id: int) -> str | None:
     except Exception as e:
         return f"send_photo: failed to send {resolved.name}: {e}"
 
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Memory actions
+# ---------------------------------------------------------------------------
+
+
+async def _action_memory_set(action: dict, user_id: int | None) -> str | None:
+    """Save a memory. Returns error string or None."""
+    category = action.get("category")
+    key = action.get("key")
+    value = action.get("value")
+    if not category or not key or not value:
+        return "memory_set: requires 'category', 'key', and 'value'"
+
+    try:
+        from megobari.db import Repository, get_session
+
+        async with get_session() as session:
+            repo = Repository(session)
+            await repo.set_memory(
+                category=category,
+                key=key,
+                content=value,
+                user_id=user_id,
+            )
+        logger.info("Memory saved: %s/%s", category, key)
+    except Exception as e:
+        logger.warning("memory_set failed: %s", e)
+        return f"memory_set: {e}"
+    return None
+
+
+async def _action_memory_delete(action: dict, user_id: int | None) -> str | None:
+    """Delete a memory. Returns error string or None."""
+    category = action.get("category")
+    key = action.get("key")
+    if not category or not key:
+        return "memory_delete: requires 'category' and 'key'"
+
+    try:
+        from megobari.db import Repository, get_session
+
+        async with get_session() as session:
+            repo = Repository(session)
+            ok = await repo.delete_memory(
+                category=category, key=key, user_id=user_id
+            )
+        if ok:
+            logger.info("Memory deleted: %s/%s", category, key)
+        else:
+            return f"memory_delete: not found {category}/{key}"
+    except Exception as e:
+        logger.warning("memory_delete failed: %s", e)
+        return f"memory_delete: {e}"
+    return None
+
+
+async def _action_memory_list(
+    action: dict, bot, chat_id: int, user_id: int | None
+) -> str | None:
+    """List memories and send to chat. Returns error string or None."""
+    category = action.get("category")
+    try:
+        from megobari.db import Repository, get_session
+
+        async with get_session() as session:
+            repo = Repository(session)
+            memories = await repo.list_memories(
+                user_id=user_id, category=category
+            )
+        if not memories:
+            await bot.send_message(chat_id=chat_id, text="📭 No memories found.")
+        else:
+            lines = []
+            for m in memories:
+                lines.append(f"• **{m.category}/{m.key}**: {m.content}")
+            await bot.send_message(
+                chat_id=chat_id, text="\n".join(lines)
+            )
+    except Exception as e:
+        logger.warning("memory_list failed: %s", e)
+        return f"memory_list: {e}"
     return None
 
 

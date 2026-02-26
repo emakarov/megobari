@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from telegram import Update
@@ -12,8 +14,9 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from megobari.actions import execute_actions, parse_actions
-from megobari.claude_bridge import send_to_claude
+from megobari.claude_bridge import QueryUsage, send_to_claude
 from megobari.config import Config
+from megobari.db import Repository, get_session, init_db
 from megobari.formatting import Formatter, TelegramFormatter
 from megobari.markdown_html import markdown_to_html
 from megobari.message_utils import (
@@ -24,12 +27,23 @@ from megobari.message_utils import (
     split_message,
     tool_status_text,
 )
-from megobari.session import VALID_PERMISSION_MODES, SessionManager
+from megobari.recall import build_recall_context
+from megobari.session import (
+    MODEL_ALIASES,
+    VALID_EFFORT_LEVELS,
+    VALID_PERMISSION_MODES,
+    VALID_THINKING_MODES,
+    SessionManager,
+)
+from megobari.summarizer import log_message, maybe_summarize_background
 
 logger = logging.getLogger(__name__)
 
 # Client-specific formatter — swap this out for other frontends.
 fmt: Formatter = TelegramFormatter()
+
+# Track whether Claude is currently processing a message.
+_busy = False
 
 
 def _get_sm(context: ContextTypes.DEFAULT_TYPE) -> SessionManager:
@@ -42,6 +56,24 @@ def _reply(update: Update, text: str, formatted: bool = False):
     if formatted:
         kwargs["parse_mode"] = fmt.parse_mode
     return update.message.reply_text(text, **kwargs)
+
+
+async def _track_user(update: Update) -> None:
+    """Upsert the Telegram user in the local database."""
+    user = update.effective_user
+    if user is None:
+        return
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.upsert_user(
+                telegram_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name,
+            )
+    except Exception:
+        logger.debug("Failed to track user", exc_info=True)
 
 
 # -- Command handlers --
@@ -349,8 +381,15 @@ async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, f"❌ Release failed: {e}")
 
 
+def _busy_emoji() -> str:
+    """Return hourglass if busy, eyes if idle."""
+    return "\u23f3" if _busy else "\U0001f440"
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming photos: save to session cwd and forward path to Claude."""
+    global _busy
+
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -364,7 +403,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Get highest resolution photo
     photo = update.message.photo[-1]
 
-    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    asyncio.create_task(_track_user(update))
+    _busy = True
 
     try:
         photo_file = await photo.get_file()
@@ -384,11 +425,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Error handling photo")
         await _reply(update, f"Something went wrong with photo: {e}")
     finally:
+        _busy = False
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming documents: save to session cwd and forward path to Claude."""
+    global _busy
+
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -400,7 +444,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     caption = update.message.caption or ""
     doc = update.message.document
 
-    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    asyncio.create_task(_track_user(update))
+    _busy = True
 
     try:
         doc_file = await doc.get_file()
@@ -419,11 +465,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.exception("Error handling document")
         await _reply(update, f"Something went wrong with document: {e}")
     finally:
+        _busy = False
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming voice messages: transcribe and send to Claude."""
+    global _busy
     try:
         from megobari.voice import INSTALL_HINT, get_transcriber, is_available
     except ImportError:
@@ -448,8 +496,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
 
-    # React with eyes to show we're working
-    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+    # React with appropriate emoji based on busy state
+    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    asyncio.create_task(_track_user(update))
+    _busy = True
 
     tmp_path = None
     try:
@@ -477,6 +527,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Error handling voice message")
         await _reply(update, f"Something went wrong with voice: {e}")
     finally:
+        _busy = False
         await _set_reaction(context.bot, chat_id, message_id, None)
         # Clean up temp file
         if tmp_path:
@@ -499,6 +550,896 @@ async def cmd_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, "No active session. Use /new <name> first.")
         return
     await _reply(update, format_session_info(session, fmt), formatted=True)
+
+
+# -- Persona / Memory / Summary commands --
+
+
+async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /persona command: create, list, switch, delete, info."""
+    args = context.args or []
+    if not args:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/persona list\n"
+            "/persona create <name> [description]\n"
+            "/persona info <name>\n"
+            "/persona default <name>\n"
+            "/persona delete <name>\n"
+            "/persona prompt <name> <text>\n"
+            "/persona mcp <name> <server1,server2,...>",
+        )
+        return
+
+    sub = args[0].lower()
+
+    if sub == "list":
+        async with get_session() as s:
+            repo = Repository(s)
+            personas = await repo.list_personas()
+        if not personas:
+            await _reply(update, "No personas yet. Use /persona create <name>")
+            return
+        lines = []
+        for p in personas:
+            marker = " (default)" if p.is_default else ""
+            lines.append(f"{'>' if p.is_default else ' '} {fmt.bold(p.name)}{marker}")
+            if p.description:
+                lines.append(f"   {fmt.escape(p.description)}")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "create":
+        if len(args) < 2:
+            await _reply(update, "Usage: /persona create <name> [description]")
+            return
+        name = args[1]
+        desc = " ".join(args[2:]) if len(args) > 2 else None
+        async with get_session() as s:
+            repo = Repository(s)
+            existing = await repo.get_persona(name)
+            if existing:
+                await _reply(update, f"Persona '{name}' already exists.")
+                return
+            await repo.create_persona(name=name, description=desc)
+        await _reply(update, f"Created persona '{name}'.")
+
+    elif sub == "info":
+        if len(args) < 2:
+            await _reply(update, "Usage: /persona info <name>")
+            return
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.get_persona(args[1])
+        if not p:
+            await _reply(update, f"Persona '{args[1]}' not found.")
+            return
+        lines = [
+            fmt.bold(p.name),
+            f"Description: {p.description or '—'}",
+            f"Default: {'yes' if p.is_default else 'no'}",
+            f"System prompt: {(p.system_prompt[:100] + '...') if p.system_prompt else '—'}",
+            f"MCP servers: {p.mcp_servers or '—'}",
+        ]
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "default":
+        if len(args) < 2:
+            await _reply(update, "Usage: /persona default <name>")
+            return
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.set_default_persona(args[1])
+        if not p:
+            await _reply(update, f"Persona '{args[1]}' not found.")
+            return
+        await _reply(update, f"Default persona set to '{p.name}'.")
+
+    elif sub == "delete":
+        if len(args) < 2:
+            await _reply(update, "Usage: /persona delete <name>")
+            return
+        async with get_session() as s:
+            repo = Repository(s)
+            deleted = await repo.delete_persona(args[1])
+        if deleted:
+            await _reply(update, f"Deleted persona '{args[1]}'.")
+        else:
+            await _reply(update, f"Persona '{args[1]}' not found.")
+
+    elif sub == "prompt":
+        if len(args) < 3:
+            await _reply(update, "Usage: /persona prompt <name> <text>")
+            return
+        name = args[1]
+        prompt_text = " ".join(args[2:])
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.update_persona(name, system_prompt=prompt_text)
+        if not p:
+            await _reply(update, f"Persona '{name}' not found.")
+            return
+        await _reply(update, f"System prompt updated for '{name}'.")
+
+    elif sub == "mcp":
+        if len(args) < 3:
+            await _reply(update, "Usage: /persona mcp <name> <server1,server2,...>")
+            return
+        name = args[1]
+        servers = [s.strip() for s in args[2].split(",")]
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.update_persona(name, mcp_servers=servers)
+        if not p:
+            await _reply(update, f"Persona '{name}' not found.")
+            return
+        await _reply(update, f"MCP servers for '{name}': {servers}")
+
+    else:
+        await _reply(update, f"Unknown subcommand: {sub}. Use /persona for help.")
+
+
+async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /memory command: set, get, list, delete."""
+    args = context.args or []
+    if not args:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/memory list [category]\n"
+            "/memory set <category> <key> <value>\n"
+            "/memory get <category> <key>\n"
+            "/memory delete <category> <key>",
+        )
+        return
+
+    sub = args[0].lower()
+
+    if sub == "list":
+        category = args[1] if len(args) > 1 else None
+        async with get_session() as s:
+            repo = Repository(s)
+            mems = await repo.list_memories(category=category)
+        if not mems:
+            await _reply(update, "No memories found.")
+            return
+        lines = []
+        for m in mems:
+            lines.append(f"{fmt.bold(m.category)}/{fmt.code(m.key)}: {fmt.escape(m.content[:80])}")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "set":
+        if len(args) < 4:
+            await _reply(update, "Usage: /memory set <category> <key> <value>")
+            return
+        category, key = args[1], args[2]
+        value = " ".join(args[3:])
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.set_memory(category=category, key=key, content=value)
+        await _reply(update, f"Saved: {category}/{key}")
+
+    elif sub == "get":
+        if len(args) < 3:
+            await _reply(update, "Usage: /memory get <category> <key>")
+            return
+        async with get_session() as s:
+            repo = Repository(s)
+            mem = await repo.get_memory(args[1], args[2])
+        if not mem:
+            await _reply(update, "Not found.")
+            return
+        meta = Repository.memory_metadata(mem)
+        text = f"{fmt.bold(mem.category)}/{fmt.code(mem.key)}\n{fmt.escape(mem.content)}"
+        if meta:
+            text += f"\n\nMetadata: {fmt.code(_json.dumps(meta))}"
+        await _reply(update, text, formatted=True)
+
+    elif sub == "delete":
+        if len(args) < 3:
+            await _reply(update, "Usage: /memory delete <category> <key>")
+            return
+        async with get_session() as s:
+            repo = Repository(s)
+            deleted = await repo.delete_memory(args[1], args[2])
+        if deleted:
+            await _reply(update, f"Deleted: {args[1]}/{args[2]}")
+        else:
+            await _reply(update, "Not found.")
+
+    else:
+        await _reply(update, f"Unknown subcommand: {sub}. Use /memory for help.")
+
+
+async def cmd_summaries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /summaries command: list, search, milestones."""
+    args = context.args or []
+    sm = _get_sm(context)
+    session = sm.current
+
+    if not args:
+        # Default: show recent summaries for current session
+        session_name = session.name if session else None
+        async with get_session() as s:
+            repo = Repository(s)
+            sums = await repo.get_summaries(session_name=session_name, limit=5)
+        if not sums:
+            await _reply(update, "No summaries yet.")
+            return
+        lines = []
+        for cs in sums:
+            ts = cs.created_at.strftime("%Y-%m-%d %H:%M") if cs.created_at else "?"
+            marker = " *" if cs.is_milestone else ""
+            lines.append(f"{fmt.bold(ts)}{marker} [{cs.session_name}] ({cs.message_count} msgs)")
+            # Show first 150 chars of summary
+            preview = cs.summary[:150] + ("..." if len(cs.summary) > 150 else "")
+            lines.append(f"  {fmt.escape(preview)}")
+            lines.append("")
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    sub = args[0].lower()
+
+    if sub == "all":
+        async with get_session() as s:
+            repo = Repository(s)
+            sums = await repo.get_summaries(limit=10)
+        if not sums:
+            await _reply(update, "No summaries found.")
+            return
+        lines = []
+        for cs in sums:
+            ts = cs.created_at.strftime("%Y-%m-%d %H:%M") if cs.created_at else "?"
+            lines.append(f"{fmt.bold(ts)} [{cs.session_name}] ({cs.message_count} msgs)")
+            preview = cs.summary[:100] + ("..." if len(cs.summary) > 100 else "")
+            lines.append(f"  {fmt.escape(preview)}")
+            lines.append("")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "search":
+        if len(args) < 2:
+            await _reply(update, "Usage: /summaries search <query>")
+            return
+        query = " ".join(args[1:])
+        async with get_session() as s:
+            repo = Repository(s)
+            sums = await repo.search_summaries(query)
+        if not sums:
+            await _reply(update, f"No summaries matching '{query}'.")
+            return
+        lines = []
+        for cs in sums:
+            ts = cs.created_at.strftime("%Y-%m-%d %H:%M") if cs.created_at else "?"
+            lines.append(f"{fmt.bold(ts)} [{cs.session_name}]")
+            preview = cs.summary[:150] + ("..." if len(cs.summary) > 150 else "")
+            lines.append(f"  {fmt.escape(preview)}")
+            lines.append("")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "milestones":
+        async with get_session() as s:
+            repo = Repository(s)
+            sums = await repo.get_summaries(milestones_only=True, limit=10)
+        if not sums:
+            await _reply(update, "No milestones found.")
+            return
+        lines = []
+        for cs in sums:
+            ts = cs.created_at.strftime("%Y-%m-%d %H:%M") if cs.created_at else "?"
+            lines.append(f"{fmt.bold(ts)} * [{cs.session_name}]")
+            preview = cs.summary[:150] + ("..." if len(cs.summary) > 150 else "")
+            lines.append(f"  {fmt.escape(preview)}")
+            lines.append("")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/summaries — recent for current session\n"
+            "/summaries all — recent across all sessions\n"
+            "/summaries search <query>\n"
+            "/summaries milestones",
+        )
+
+
+# -- /think command --
+
+
+async def cmd_think(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /think command: control extended thinking."""
+    sm = _get_sm(context)
+    session = sm.current
+
+    args = context.args or []
+
+    if not args:
+        budget_info = ""
+        if session.thinking == "enabled" and session.thinking_budget:
+            budget_info = f" (budget: {session.thinking_budget:,} tokens)"
+        msg = f"Thinking: {fmt.bold(session.thinking)}{budget_info}"
+        await _reply(update, msg, formatted=True)
+        return
+
+    mode = args[0].lower()
+
+    if mode == "on":
+        session.thinking = "enabled"
+        budget = 10000
+        if len(args) > 1:
+            try:
+                budget = int(args[1])
+            except ValueError:
+                await _reply(update, "Invalid budget. Use: /think on [budget_tokens]")
+                return
+        session.thinking_budget = budget
+        sm._save()
+        await _reply(update, f"✅ Thinking enabled (budget: {budget:,} tokens)")
+    elif mode == "off":
+        session.thinking = "disabled"
+        session.thinking_budget = None
+        sm._save()
+        await _reply(update, "✅ Thinking disabled")
+    elif mode in VALID_THINKING_MODES:
+        session.thinking = mode
+        if mode != "enabled":
+            session.thinking_budget = None
+        sm._save()
+        await _reply(update, f"✅ Thinking: {mode}")
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/think — show current setting\n"
+            "/think adaptive — let Claude decide (default)\n"
+            "/think on [budget] — enable with optional budget (default 10000)\n"
+            "/think off — disable thinking",
+        )
+
+
+# -- /effort command --
+
+
+async def cmd_effort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /effort command: control effort level."""
+    sm = _get_sm(context)
+    session = sm.current
+    args = context.args or []
+
+    if not args:
+        level = session.effort or "not set (SDK default)"
+        await _reply(update, f"Effort: {fmt.bold(str(level))}", formatted=True)
+        return
+
+    level = args[0].lower()
+
+    if level == "off":
+        session.effort = None
+        sm._save()
+        await _reply(update, "✅ Effort cleared (using SDK default)")
+    elif level in VALID_EFFORT_LEVELS:
+        session.effort = level
+        sm._save()
+        await _reply(update, f"✅ Effort: {level}")
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/effort — show current setting\n"
+            "/effort low|medium|high|max — set level\n"
+            "/effort off — clear (use SDK default)",
+        )
+
+
+# -- /usage command --
+
+
+@dataclass
+class SessionUsage:
+    """Accumulated usage for a session (in-memory, resets on restart)."""
+
+    total_cost_usd: float = 0.0
+    total_turns: int = 0
+    total_duration_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    message_count: int = 0
+
+
+def _accumulate_usage(
+    context: ContextTypes.DEFAULT_TYPE,
+    session_name: str,
+    query_usage: QueryUsage,
+    user_id: int | None = None,
+) -> None:
+    """Accumulate usage stats from a query into bot_data and persist to DB."""
+    # In-memory accumulation
+    usage_map: dict[str, SessionUsage] = context.bot_data.setdefault("usage", {})
+    su = usage_map.setdefault(session_name, SessionUsage())
+    su.total_cost_usd += query_usage.cost_usd
+    su.total_turns += query_usage.num_turns
+    su.total_duration_ms += query_usage.duration_api_ms
+    su.input_tokens += query_usage.input_tokens
+    su.output_tokens += query_usage.output_tokens
+    su.message_count += 1
+
+    # Persist to DB (fire-and-forget)
+    asyncio.create_task(
+        _persist_usage(session_name, query_usage, user_id)
+    )
+
+
+async def _persist_usage(
+    session_name: str, query_usage: QueryUsage, user_id: int | None
+) -> None:
+    """Save a usage record to the database."""
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_usage(
+                session_name=session_name,
+                cost_usd=query_usage.cost_usd,
+                num_turns=query_usage.num_turns,
+                duration_ms=query_usage.duration_api_ms,
+                input_tokens=query_usage.input_tokens,
+                output_tokens=query_usage.output_tokens,
+                user_id=user_id,
+            )
+    except Exception:
+        logger.warning("Failed to persist usage record", exc_info=True)
+
+
+async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /usage command: show session and historical usage stats."""
+    sm = _get_sm(context)
+    session = sm.current
+    args = context.args or []
+
+    if args and args[0].lower() == "all":
+        # Show all-time totals from DB
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                total = await repo.get_total_usage()
+        except Exception:
+            await _reply(update, "Failed to read usage from DB.")
+            return
+
+        if total["query_count"] == 0:
+            await _reply(update, "No usage recorded yet.")
+            return
+
+        duration_s = total["total_duration_ms"] / 1000
+        lines = [
+            fmt.bold("All-time usage:"),
+            f"{fmt.bold('Cost:')} ${total['total_cost']:.4f}",
+            f"{fmt.bold('Turns:')} {total['total_turns']} ({total['query_count']} queries)",
+            f"{fmt.bold('Sessions:')} {total['session_count']}",
+            f"{fmt.bold('API time:')} {duration_s:.1f}s",
+        ]
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    # Show current session usage — combine in-memory + DB historical
+    lines = [f"{fmt.bold('Session:')} {fmt.escape(session.name)}"]
+
+    # Current run (in-memory)
+    usage_map: dict[str, SessionUsage] = context.bot_data.get("usage", {})
+    su = usage_map.get(session.name)
+
+    # Historical (DB)
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            db_usage = await repo.get_session_usage(session.name)
+    except Exception:
+        db_usage = None
+
+    if su and su.message_count > 0:
+        duration_s = su.total_duration_ms / 1000
+        lines.append("")
+        lines.append(fmt.bold("This run:"))
+        lines.append(f"  Cost: ${su.total_cost_usd:.4f}")
+        lines.append(f"  Turns: {su.total_turns} ({su.message_count} messages)")
+        lines.append(f"  API time: {duration_s:.1f}s")
+
+    if db_usage and db_usage["query_count"] > 0:
+        duration_s = db_usage["total_duration_ms"] / 1000
+        lines.append("")
+        lines.append(fmt.bold("All-time (this session):"))
+        lines.append(f"  Cost: ${db_usage['total_cost']:.4f}")
+        lines.append(f"  Turns: {db_usage['total_turns']} ({db_usage['query_count']} queries)")
+        lines.append(f"  API time: {duration_s:.1f}s")
+
+    if (not su or su.message_count == 0) and (not db_usage or db_usage["query_count"] == 0):
+        await _reply(update, "No usage recorded yet for this session.")
+        return
+
+    await _reply(update, "\n".join(lines), formatted=True)
+
+
+# -- /compact command --
+
+
+async def cmd_compact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /compact command: summarize conversation and reset context."""
+    sm = _get_sm(context)
+    session = sm.current
+    chat_id = update.effective_chat.id
+
+    if not session.session_id:
+        await _reply(update, "No active context to compact.")
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+    # Ask Claude to summarize the conversation
+    summary_prompt = (
+        "Summarize our conversation. Produce two parts separated by the "
+        "exact delimiter '---FULL---' on its own line:\n"
+        "1. First, a SHORT one-line summary (max 150 chars) capturing the essence.\n"
+        "2. Then '---FULL---'\n"
+        "3. Then a FULL summary with bullet points covering decisions made, "
+        "tasks completed, and any ongoing work."
+    )
+
+    response_text, _, _, _ = await send_to_claude(
+        prompt=summary_prompt, session=session,
+    )
+
+    # Parse short + full summary from response
+    from megobari.summarizer import _parse_summary
+    short_summary, full_summary = _parse_summary(response_text)
+
+    # Clear context (break session)
+    session.session_id = None
+    sm._save()
+
+    # Seed new context with the summary
+    seed_prompt = (
+        f"Here is a summary of our previous conversation context:\n\n"
+        f"{full_summary}\n\n"
+        f"Continue from here. The user has compacted the conversation."
+    )
+    _, _, new_session_id, _ = await send_to_claude(
+        prompt=seed_prompt, session=session,
+    )
+
+    if new_session_id:
+        sm.update_session_id(session.name, new_session_id)
+
+    # Save as a summary in DB
+    uid = update.effective_user.id if update.effective_user else None
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_summary(
+                session_name=session.name,
+                summary=full_summary,
+                short_summary=short_summary,
+                message_count=0,
+                is_milestone=True,
+                user_id=uid,
+            )
+    except Exception:
+        logger.warning("Failed to save compact summary to DB")
+
+    compact_msg = f"📦 Context compacted.\n\n{fmt.bold('Summary:')}\n{fmt.escape(full_summary)}"
+    for chunk in split_message(compact_msg):
+        await _reply(update, chunk, formatted=True)
+
+
+# -- /doctor command --
+
+
+async def cmd_doctor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /doctor command: run health checks."""
+    sm = _get_sm(context)
+    checks: list[str] = []
+
+    # 1. Claude CLI check
+    try:
+        import claude_agent_sdk
+        version = getattr(claude_agent_sdk, "__version__", "unknown")
+        checks.append(f"✅ Claude SDK: v{version}")
+    except ImportError:
+        checks.append("❌ Claude SDK: not installed")
+
+    # 2. CLI reachability
+    try:
+        import shutil
+        cli_path = shutil.which("claude")
+        if cli_path:
+            checks.append(f"✅ Claude CLI: {cli_path}")
+        else:
+            checks.append("❌ Claude CLI: not found in PATH")
+    except Exception as e:
+        checks.append(f"❌ Claude CLI check failed: {e}")
+
+    # 3. Sessions info
+    all_sessions = sm.list_all()
+    stale = sum(1 for s in all_sessions if s.session_id)
+    checks.append(f"📋 Sessions: {len(all_sessions)} total, {stale} with context")
+
+    # 4. Sessions dir disk usage
+    sessions_dir = sm._sessions_dir
+    if sessions_dir.exists():
+        sessions_file = sessions_dir / "sessions.json"
+        size_bytes = sessions_file.stat().st_size if sessions_file.exists() else 0
+        if size_bytes < 1024:
+            size_str = f"{size_bytes}B"
+        else:
+            size_str = f"{size_bytes / 1024:.1f}KB"
+        checks.append(f"💾 Sessions file: {size_str}")
+    else:
+        checks.append("💾 Sessions dir: not found")
+
+    # 5. Database check
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            from sqlalchemy import func, select
+
+            from megobari.db.models import ConversationSummary, Memory, Message, User
+            await repo.list_memories()  # just to test connectivity
+            result = await s.execute(select(func.count()).select_from(User))
+            user_count = result.scalar()
+            result = await s.execute(select(func.count()).select_from(Memory))
+            mem_count = result.scalar()
+            result = await s.execute(select(func.count()).select_from(ConversationSummary))
+            sum_count = result.scalar()
+            result = await s.execute(select(func.count()).select_from(Message))
+            msg_count = result.scalar()
+        checks.append(
+            f"🗄 DB: {user_count} users, {mem_count} memories, "
+            f"{sum_count} summaries, {msg_count} messages"
+        )
+    except Exception as e:
+        checks.append(f"❌ DB: {e}")
+
+    # 6. Current session info
+    session = sm.current
+    if session:
+        checks.append(
+            f"🔧 Active session: {session.name} "
+            f"(thinking={session.thinking}, effort={session.effort or 'default'})"
+        )
+
+    await _reply(update, "\n".join(checks))
+
+
+# -- /model command --
+
+
+async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /model command: switch model for current session."""
+    sm = _get_sm(context)
+    session = sm.current
+    args = context.args or []
+
+    if not args:
+        current = session.model or "default (SDK decides)"
+        aliases_list = ", ".join(sorted(MODEL_ALIASES.keys()))
+        await _reply(
+            update,
+            f"{fmt.bold('Model:')} {fmt.escape(current)}\n\n"
+            f"Available: {aliases_list}\n"
+            f"Or use a full model name.",
+            formatted=True,
+        )
+        return
+
+    model = args[0].lower()
+
+    if model == "default" or model == "off":
+        session.model = None
+        sm._save()
+        await _reply(update, "✅ Model cleared (SDK default)")
+        return
+
+    # Resolve alias
+    resolved = MODEL_ALIASES.get(model, model)
+    session.model = resolved
+    sm._save()
+    display = f"{model} → {resolved}" if model != resolved else resolved
+    await _reply(update, f"✅ Model: {display}")
+
+
+# -- /context command --
+
+
+async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /context command: show token usage for current session."""
+    sm = _get_sm(context)
+    session = sm.current
+
+    # In-memory (this run)
+    usage_map: dict[str, SessionUsage] = context.bot_data.get("usage", {})
+    su = usage_map.get(session.name)
+
+    # DB history
+    try:
+        async with get_session() as s:
+            repo = Repository(s)
+            db_usage = await repo.get_session_usage(session.name)
+    except Exception:
+        db_usage = None
+
+    lines = [f"{fmt.bold('Context info for:')} {fmt.escape(session.name)}"]
+
+    if su and su.message_count > 0:
+        total_tokens = su.input_tokens + su.output_tokens
+        lines.append("")
+        lines.append(fmt.bold("This run:"))
+        lines.append(f"  Input tokens: {su.input_tokens:,}")
+        lines.append(f"  Output tokens: {su.output_tokens:,}")
+        lines.append(f"  Total tokens: {total_tokens:,}")
+        lines.append(f"  Messages: {su.message_count}")
+
+    if db_usage and db_usage["query_count"] > 0:
+        db_total = db_usage["total_input_tokens"] + db_usage["total_output_tokens"]
+        lines.append("")
+        lines.append(fmt.bold("All-time (this session):"))
+        lines.append(f"  Input tokens: {db_usage['total_input_tokens']:,}")
+        lines.append(f"  Output tokens: {db_usage['total_output_tokens']:,}")
+        lines.append(f"  Total tokens: {db_total:,}")
+        lines.append(f"  Queries: {db_usage['query_count']}")
+
+    if (not su or su.message_count == 0) and (not db_usage or db_usage["query_count"] == 0):
+        lines.append("\nNo token data recorded yet.")
+
+    # Session config
+    lines.append("")
+    lines.append(fmt.bold("Session config:"))
+    lines.append(f"  Model: {session.model or 'default'}")
+    lines.append(f"  Thinking: {session.thinking}")
+    lines.append(f"  Effort: {session.effort or 'default'}")
+    lines.append(f"  Has context: {'yes' if session.session_id else 'no'}")
+
+    await _reply(update, "\n".join(lines), formatted=True)
+
+
+# -- /history command --
+
+
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /history command: browse past conversations from DB."""
+    sm = _get_sm(context)
+    session = sm.current
+    args = context.args or []
+
+    if not args:
+        # Show recent messages for current session
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                msgs = await repo.get_recent_messages(session.name, limit=10)
+        except Exception:
+            await _reply(update, "Failed to read history from DB.")
+            return
+
+        if not msgs:
+            await _reply(update, "No messages recorded for this session yet.")
+            return
+
+        lines = [fmt.bold(f"Recent messages ({session.name}):"), ""]
+        for m in reversed(msgs):  # oldest first
+            ts = m.created_at.strftime("%H:%M") if m.created_at else "?"
+            role_icon = "👤" if m.role == "user" else "🤖"
+            preview = m.content[:100] + ("..." if len(m.content) > 100 else "")
+            lines.append(f"{role_icon} {ts} {fmt.escape(preview)}")
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    sub = args[0].lower()
+
+    if sub == "all":
+        # Show messages across all sessions
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                from sqlalchemy import select
+
+                from megobari.db.models import Message
+                stmt = (
+                    select(Message)
+                    .order_by(Message.created_at.desc())
+                    .limit(15)
+                )
+                result = await s.execute(stmt)
+                msgs = list(result.scalars().all())
+        except Exception:
+            await _reply(update, "Failed to read history from DB.")
+            return
+
+        if not msgs:
+            await _reply(update, "No messages recorded yet.")
+            return
+
+        lines = [fmt.bold("Recent messages (all sessions):"), ""]
+        for m in reversed(msgs):
+            ts = m.created_at.strftime("%m-%d %H:%M") if m.created_at else "?"
+            role_icon = "👤" if m.role == "user" else "🤖"
+            preview = m.content[:80] + ("..." if len(m.content) > 80 else "")
+            lines.append(f"{role_icon} {ts} [{m.session_name}] {fmt.escape(preview)}")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "search" and len(args) > 1:
+        query_text = " ".join(args[1:])
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                from sqlalchemy import select
+
+                from megobari.db.models import Message
+                stmt = (
+                    select(Message)
+                    .where(Message.content.ilike(f"%{query_text}%"))
+                    .order_by(Message.created_at.desc())
+                    .limit(10)
+                )
+                result = await s.execute(stmt)
+                msgs = list(result.scalars().all())
+        except Exception:
+            await _reply(update, "Failed to search history.")
+            return
+
+        if not msgs:
+            await _reply(update, f"No messages matching '{query_text}'.")
+            return
+
+        lines = [fmt.bold(f"Search results for '{query_text}':"), ""]
+        for m in reversed(msgs):
+            ts = m.created_at.strftime("%m-%d %H:%M") if m.created_at else "?"
+            role_icon = "👤" if m.role == "user" else "🤖"
+            preview = m.content[:100] + ("..." if len(m.content) > 100 else "")
+            lines.append(f"{role_icon} {ts} [{m.session_name}] {fmt.escape(preview)}")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    elif sub == "stats":
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                from sqlalchemy import func as sqlfunc
+                from sqlalchemy import select
+
+                from megobari.db.models import Message
+
+                # Count by session
+                stmt = (
+                    select(
+                        Message.session_name,
+                        sqlfunc.count(Message.id).label("cnt"),
+                    )
+                    .group_by(Message.session_name)
+                    .order_by(sqlfunc.count(Message.id).desc())
+                    .limit(10)
+                )
+                result = await s.execute(stmt)
+                rows = result.all()
+        except Exception:
+            await _reply(update, "Failed to read history stats.")
+            return
+
+        if not rows:
+            await _reply(update, "No messages recorded yet.")
+            return
+
+        lines = [fmt.bold("Message stats by session:"), ""]
+        for row in rows:
+            marker = " ◂" if row.session_name == session.name else ""
+            lines.append(f"  {fmt.escape(row.session_name)}: {row.cnt} messages{marker}")
+        await _reply(update, "\n".join(lines), formatted=True)
+
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/history — recent messages for current session\n"
+            "/history all — recent across all sessions\n"
+            "/history search <query> — search message content\n"
+            "/history stats — message counts by session",
+        )
 
 
 # -- Message handler --
@@ -587,6 +1528,8 @@ async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages and send to Claude."""
+    global _busy
+
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -597,18 +1540,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
 
+    # React immediately — before anything else
+    if _busy:
+        await _set_reaction(context.bot, chat_id, message_id, "\u23f3")
+    else:
+        await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+
+    # Fire-and-forget: track user in DB without blocking the handler
+    asyncio.create_task(_track_user(update))
+
     logger.info(
         "[%s] User: %s",
         session.name,
         user_text[:200] + ("..." if len(user_text) > 200 else ""),
     )
 
-    # React with eyes to show we're working
-    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
-
+    _busy = True
     try:
         await _process_prompt(user_text, update, context)
     finally:
+        _busy = False
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
@@ -625,23 +1576,28 @@ async def _process_prompt(
         _send_typing_periodically(chat_id, context.bot)
     )
 
+    # Build recall context (summaries + memories)
+    recall = await build_recall_context(session.name)
+
     try:
         if session.streaming:
             accumulator = StreamingAccumulator(update, context)
             await accumulator.initialize()
-            response_text, tool_uses, new_session_id = await send_to_claude(
+            response_text, tool_uses, new_session_id, usage = await send_to_claude(
                 prompt=user_text,
                 session=session,
                 on_text_chunk=accumulator.on_chunk,
                 on_tool_use=accumulator.on_tool_use,
+                recall_context=recall,
             )
             full_text = await accumulator.finalize()
 
             # Parse and execute action blocks
             cleaned_text, actions = parse_actions(full_text)
             if actions:
+                uid = update.effective_user.id if update.effective_user else None
                 action_errors = await execute_actions(
-                    actions, context.bot, chat_id
+                    actions, context.bot, chat_id, user_id=uid
                 )
                 for err in action_errors:
                     await _reply(update, f"⚠️ {err}")
@@ -694,10 +1650,11 @@ async def _process_prompt(
                 except Exception:
                     pass
 
-            response_text, tool_uses, new_session_id = await send_to_claude(
+            response_text, tool_uses, new_session_id, usage = await send_to_claude(
                 prompt=user_text,
                 session=session,
                 on_tool_use=_on_tool_use_ns,
+                recall_context=recall,
             )
 
             # Delete the status message before sending the real response
@@ -710,8 +1667,9 @@ async def _process_prompt(
             # Parse and execute action blocks
             cleaned_text, actions = parse_actions(response_text)
             if actions:
+                uid = update.effective_user.id if update.effective_user else None
                 action_errors = await execute_actions(
-                    actions, context.bot, chat_id
+                    actions, context.bot, chat_id, user_id=uid
                 )
                 for err in action_errors:
                     await _reply(update, f"⚠️ {err}")
@@ -732,6 +1690,25 @@ async def _process_prompt(
         # Update session
         if new_session_id:
             sm.update_session_id(session.name, new_session_id)
+
+        # Accumulate usage stats
+        uid = update.effective_user.id if update.effective_user else None
+        _accumulate_usage(context, session.name, usage, user_id=uid)
+
+        # Log messages and trigger summarization (fire-and-forget)
+        asyncio.create_task(log_message(session.name, "user", user_text))
+        asyncio.create_task(log_message(session.name, "assistant", response_text))
+
+        async def _summarize_send(prompt: str) -> str:
+            """Lightweight Claude call for summarization (fresh session)."""
+            from megobari.session import Session as _Session
+            tmp_session = _Session(name="_summarizer", cwd=session.cwd)
+            text, _, _, _ = await send_to_claude(prompt=prompt, session=tmp_session)
+            return text
+
+        asyncio.create_task(
+            maybe_summarize_background(session.name, _summarize_send)
+        )
 
     except Exception as e:
         logger.exception("Error handling message")
@@ -790,6 +1767,17 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("current", cmd_current, filters=user_filter))
     app.add_handler(CommandHandler("restart", cmd_restart, filters=user_filter))
     app.add_handler(CommandHandler("release", cmd_release, filters=user_filter))
+    app.add_handler(CommandHandler("persona", cmd_persona, filters=user_filter))
+    app.add_handler(CommandHandler("memory", cmd_memory, filters=user_filter))
+    app.add_handler(CommandHandler("summaries", cmd_summaries, filters=user_filter))
+    app.add_handler(CommandHandler("think", cmd_think, filters=user_filter))
+    app.add_handler(CommandHandler("effort", cmd_effort, filters=user_filter))
+    app.add_handler(CommandHandler("usage", cmd_usage, filters=user_filter))
+    app.add_handler(CommandHandler("compact", cmd_compact, filters=user_filter))
+    app.add_handler(CommandHandler("doctor", cmd_doctor, filters=user_filter))
+    app.add_handler(CommandHandler("model", cmd_model, filters=user_filter))
+    app.add_handler(CommandHandler("context", cmd_context, filters=user_filter))
+    app.add_handler(CommandHandler("history", cmd_history, filters=user_filter))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & user_filter,
@@ -816,7 +1804,10 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     )
 
     async def _post_init(application: Application) -> None:
-        """Send restart notification if we're coming back from a restart."""
+        """Initialize DB and send restart notification."""
+        await init_db()
+        logger.info("Database initialized at ~/.megobari/megobari.db")
+
         from megobari.actions import load_restart_marker
 
         chat_id = load_restart_marker()

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from megobari.claude_bridge import (
     _BASE_SYSTEM_PROMPT,
+    QueryUsage,
     _build_system_prompt,
     _run_query,
     send_to_claude,
@@ -54,7 +55,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, tool_uses, sid = await _run_query(
+            text, tool_uses, sid, _ = await _run_query(
                 "hi", options, session
             )
 
@@ -101,7 +102,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, tool_uses, sid = await _run_query(
+            text, tool_uses, sid, _ = await _run_query(
                 "run ls", options, session
             )
 
@@ -140,7 +141,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, _ = await _run_query(
+            text, _, _, _ = await _run_query(
                 "hi", options, session, on_text_chunk=on_chunk
             )
 
@@ -174,7 +175,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            _, _, sid = await _run_query("hi", options, session)
+            _, _, sid, _ = await _run_query("hi", options, session)
 
         # ResultMessage session_id takes precedence
         assert sid == "result-sid"
@@ -223,7 +224,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, tool_uses, sid = await _run_query(
+            text, tool_uses, sid, _ = await _run_query(
                 "hi", options, session, on_tool_use=on_tool
             )
 
@@ -256,7 +257,7 @@ class TestRunQuery:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, _ = await _run_query("hi", options, session)
+            text, _, _, _ = await _run_query("hi", options, session)
 
         assert text == "fallback text"
 
@@ -266,8 +267,8 @@ class TestSendToClaude:
         session = Session(name="s", cwd="/tmp")
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
-            mock_rq.return_value = ("response", [], "sid-1")
-            text, tools, sid = await send_to_claude("hi", session)
+            mock_rq.return_value = ("response", [], "sid-1", QueryUsage())
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert text == "response"
         assert sid == "sid-1"
@@ -276,8 +277,8 @@ class TestSendToClaude:
         session = Session(name="s", cwd="/tmp")
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
-            mock_rq.return_value = ("", [], "sid-1")
-            text, _, _ = await send_to_claude("hi", session)
+            mock_rq.return_value = ("", [], "sid-1", QueryUsage())
+            text, _, _, _ = await send_to_claude("hi", session)
 
         assert text == "(no response)"
 
@@ -288,7 +289,7 @@ class TestSendToClaude:
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
             mock_rq.side_effect = CLINotFoundError()
-            text, tools, sid = await send_to_claude("hi", session)
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert "not found" in text.lower()
         assert tools == []
@@ -307,10 +308,10 @@ class TestSendToClaude:
             call_count += 1
             if call_count == 1:
                 raise ProcessError("fail")
-            return ("retried", [], "new-sid")
+            return ("retried", [], "new-sid", QueryUsage())
 
         with patch("megobari.claude_bridge._run_query", mock_rq):
-            text, _, sid = await send_to_claude("hi", session)
+            text, _, sid, _ = await send_to_claude("hi", session)
 
         assert text == "retried"
         assert call_count == 2
@@ -322,7 +323,7 @@ class TestSendToClaude:
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
             mock_rq.side_effect = ProcessError("fail")
-            text, tools, sid = await send_to_claude("hi", session)
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert "Error" in text
 
@@ -331,7 +332,7 @@ class TestSendToClaude:
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
             mock_rq.side_effect = ValueError("boom")
-            text, tools, sid = await send_to_claude("hi", session)
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert "ValueError" in text
         assert "boom" in text
@@ -345,7 +346,7 @@ class TestSendToClaude:
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
             mock_rq.side_effect = ProcessError("fail")
-            text, tools, sid = await send_to_claude("hi", session)
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert "Error" in text
         assert sid is None
@@ -356,7 +357,7 @@ class TestSendToClaude:
         )
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
-            mock_rq.return_value = ("ok", [], "sid")
+            mock_rq.return_value = ("ok", [], "sid", QueryUsage())
             await send_to_claude("hi", session)
             call_args = mock_rq.call_args
             options = call_args[0][1]
@@ -369,7 +370,7 @@ class TestSendToClaude:
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
             mock_rq.side_effect = MessageParseError("bad", data={"x": 1})
-            text, tools, sid = await send_to_claude("hi", session)
+            text, tools, sid, _ = await send_to_claude("hi", session)
 
         assert "parse error" in text.lower()
         assert tools == []
@@ -388,10 +389,10 @@ class TestSendToClaude:
             call_count += 1
             if call_count == 1:
                 raise CLIConnectionError("conn lost")
-            return ("reconnected", [], "new-sid")
+            return ("reconnected", [], "new-sid", QueryUsage())
 
         with patch("megobari.claude_bridge._run_query", mock_rq):
-            text, _, sid = await send_to_claude("hi", session)
+            text, _, sid, _ = await send_to_claude("hi", session)
 
         assert text == "reconnected"
         assert call_count == 2
@@ -400,7 +401,7 @@ class TestSendToClaude:
         session = Session(name="s", cwd="/tmp")
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
-            mock_rq.return_value = ("ok", [], "sid")
+            mock_rq.return_value = ("ok", [], "sid", QueryUsage())
             await send_to_claude("hi", session)
             call_args = mock_rq.call_args
             options = call_args[0][1]
@@ -411,8 +412,8 @@ class TestSendToClaude:
         long_prompt = "x" * 300
 
         with patch("megobari.claude_bridge._run_query") as mock_rq:
-            mock_rq.return_value = ("ok", [], "sid")
-            text, _, _ = await send_to_claude(long_prompt, session)
+            mock_rq.return_value = ("ok", [], "sid", QueryUsage())
+            text, _, _, _ = await send_to_claude(long_prompt, session)
 
         assert text == "ok"
 
@@ -444,7 +445,7 @@ class TestRunQueryEdgeCases:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, sid = await _run_query("hi", options, session)
+            text, _, sid, _ = await _run_query("hi", options, session)
 
         assert sid == "sid"
 
@@ -472,7 +473,7 @@ class TestRunQueryEdgeCases:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, _ = await _run_query("hi", options, session)
+            text, _, _, _ = await _run_query("hi", options, session)
 
         # Should return empty text since no content
         assert text == ""
@@ -508,7 +509,7 @@ class TestRunQueryEdgeCases:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, _ = await _run_query(
+            text, _, _, _ = await _run_query(
                 "hi", options, session, on_text_chunk=on_chunk
             )
 
@@ -540,7 +541,7 @@ class TestRunQueryEdgeCases:
         )
 
         with patch("megobari.claude_bridge.query", mock_query):
-            text, _, sid = await _run_query("hi", options, session)
+            text, _, sid, _ = await _run_query("hi", options, session)
 
         assert text == ""
         assert sid == "sid"
