@@ -11,12 +11,14 @@ repos:
     rev: 5.13.2
     hooks:
       - id: isort
+        exclude: ^src/megobari/db/migrations/
 
   - repo: https://github.com/PyCQA/flake8
     rev: 7.1.1
     hooks:
       - id: flake8
         additional_dependencies: [flake8-pyproject>=1.2]
+        exclude: ^src/megobari/db/migrations/
 
   - repo: https://github.com/PyCQA/pydocstyle
     rev: 6.3.0
@@ -24,3 +26,4 @@ repos:
       - id: pydocstyle
         additional_dependencies: [tomli]
         args: ["--config=pyproject.toml"]
+        exclude: ^src/megobari/db/migrations/

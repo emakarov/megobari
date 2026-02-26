@@ -573,3 +573,56 @@ async def test_usage_with_user():
         user = await repo.upsert_user(telegram_id=42)
         rec = await repo.add_usage("sess1", 0.01, 3, 5000, user_id=user.id)
     assert rec.user_id == user.id
+
+
+# ---------------------------------------------------------------
+# Alembic migration engine
+# ---------------------------------------------------------------
+
+
+async def test_init_db_with_file_runs_alembic(tmp_path):
+    """init_db with a file-based SQLite should run Alembic migrations."""
+    await close_db()
+    db_path = tmp_path / "test.db"
+    url = f"sqlite+aiosqlite:///{db_path}"
+    engine = await init_db(url)
+    assert engine is not None
+    assert db_path.exists()
+
+    # Verify tables were created via Alembic
+    async with get_session() as s:
+        repo = Repository(s)
+        count = await repo.count_unsummarized("nonexistent")
+    assert count == 0
+
+    # Verify alembic_version table exists
+    async with get_session() as s:
+        from sqlalchemy import text
+        result = await s.execute(text("SELECT version_num FROM alembic_version"))
+        versions = result.scalars().all()
+    assert len(versions) == 1  # stamped at head
+
+    await close_db()
+    await init_db("sqlite+aiosqlite://")  # restore for fixture
+
+
+async def test_init_db_alembic_idempotent(tmp_path):
+    """Running init_db twice on the same DB should not fail."""
+    await close_db()
+    db_path = tmp_path / "test.db"
+    url = f"sqlite+aiosqlite:///{db_path}"
+    await init_db(url)
+    await close_db()
+    # Second init should be a no-op (already at head)
+    await init_db(url)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_message("sess", "user", "works")
+    async with get_session() as s:
+        repo = Repository(s)
+        msgs = await repo.get_unsummarized_messages("sess")
+    assert len(msgs) == 1
+
+    await close_db()
+    await init_db("sqlite+aiosqlite://")  # restore for fixture
