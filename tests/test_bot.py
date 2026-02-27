@@ -892,6 +892,128 @@ class TestHandleMessage:
         status_msg.delete.assert_called_once()
 
 
+class TestPerSessionConcurrency:
+    """Test that sessions can run in parallel."""
+
+    async def test_busy_session_rejected(self, session_manager):
+        from megobari.bot import _busy_sessions, handle_message
+
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        # Simulate session already busy
+        _busy_sessions.add("s")
+        try:
+            await handle_message(update, ctx)
+
+            text = update.message.reply_text.call_args[0][0]
+            assert "busy" in text.lower()
+            # Should set hourglass reaction
+            reaction = ctx.bot.set_message_reaction.call_args[1]["reaction"]
+            assert reaction == ["\u23f3"]
+        finally:
+            _busy_sessions.discard("s")
+
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
+    @patch("megobari.bot.send_to_claude")
+    async def test_different_session_not_blocked(
+        self, mock_send, mock_recall, session_manager,
+    ):
+        from megobari.bot import _busy_sessions, handle_message
+
+        mock_send.return_value = ("Reply!", [], "sid-b", QueryUsage())
+        session_manager.create("a")
+        session_manager.create("b")
+        session_manager.switch("b")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        # Session "a" is busy, but we're sending to "b"
+        _busy_sessions.add("a")
+        try:
+            await handle_message(update, ctx)
+            # Should have processed normally
+            mock_send.assert_called_once()
+        finally:
+            _busy_sessions.discard("a")
+            _busy_sessions.discard("b")
+
+    async def test_busy_photo_rejected(self, session_manager):
+        from megobari.bot import _busy_sessions, handle_photo
+
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        update.message.photo = [MagicMock()]
+        update.message.caption = None
+        ctx = _make_context(session_manager)
+
+        _busy_sessions.add("s")
+        try:
+            await handle_photo(update, ctx)
+            text = update.message.reply_text.call_args[0][0]
+            assert "busy" in text.lower()
+        finally:
+            _busy_sessions.discard("s")
+
+    async def test_busy_document_rejected(self, session_manager):
+        from megobari.bot import _busy_sessions, handle_document
+
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        update.message.document = MagicMock()
+        update.message.caption = None
+        ctx = _make_context(session_manager)
+
+        _busy_sessions.add("s")
+        try:
+            await handle_document(update, ctx)
+            text = update.message.reply_text.call_args[0][0]
+            assert "busy" in text.lower()
+        finally:
+            _busy_sessions.discard("s")
+
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
+    @patch("megobari.bot.send_to_claude")
+    async def test_session_cleared_after_completion(
+        self, mock_send, mock_recall, session_manager,
+    ):
+        from megobari.bot import _busy_sessions, handle_message
+
+        mock_send.return_value = ("Done!", [], "sid", QueryUsage())
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # Session should no longer be busy
+        assert "s" not in _busy_sessions
+
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
+    @patch("megobari.bot.send_to_claude")
+    async def test_session_cleared_after_error(
+        self, mock_send, mock_recall, session_manager,
+    ):
+        from megobari.bot import _busy_sessions, handle_message
+
+        mock_send.side_effect = RuntimeError("boom")
+        session_manager.create("s")
+        update = _make_update()
+        update.message.message_id = 99
+        ctx = _make_context(session_manager)
+
+        await handle_message(update, ctx)
+
+        # Session should be cleared even after error
+        assert "s" not in _busy_sessions
+
+
 class TestHandleMessageStreaming:
     @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
@@ -1634,3 +1756,39 @@ class TestStreamingAccumulator:
         # Exceed threshold
         await acc.on_chunk("b" * 200)
         msg.edit_text.assert_called_once()
+
+
+class TestBusyEmoji:
+    """Tests for the _busy_emoji helper."""
+
+    def test_specific_session_busy(self):
+        from megobari import bot as bot_mod
+
+        bot_mod._busy_sessions.add("proj1")
+        try:
+            assert bot_mod._busy_emoji("proj1") == "\u23f3"
+            assert bot_mod._busy_emoji("proj2") == "\U0001f440"
+        finally:
+            bot_mod._busy_sessions.discard("proj1")
+
+    def test_no_session_arg_any_busy(self):
+        from megobari import bot as bot_mod
+
+        assert bot_mod._busy_emoji() == "\U0001f440"
+        bot_mod._busy_sessions.add("x")
+        try:
+            assert bot_mod._busy_emoji() == "\u23f3"
+        finally:
+            bot_mod._busy_sessions.discard("x")
+
+
+class TestTrackUserNone:
+    """Cover _track_user early return when user is None."""
+
+    async def test_track_user_no_user(self):
+        from megobari.bot import _track_user
+
+        update = MagicMock()
+        update.effective_user = None
+        # Should return without error
+        await _track_user(update)

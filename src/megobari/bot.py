@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 # Client-specific formatter — swap this out for other frontends.
 fmt: Formatter = TelegramFormatter()
 
-# Track whether Claude is currently processing a message.
-_busy = False
+# Track which sessions are currently processing a query (enables parallel work).
+_busy_sessions: set[str] = set()
 
 
 def _get_sm(context: ContextTypes.DEFAULT_TYPE) -> SessionManager:
@@ -381,15 +381,19 @@ async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, f"❌ Release failed: {e}")
 
 
-def _busy_emoji() -> str:
-    """Return hourglass if busy, eyes if idle."""
-    return "\u23f3" if _busy else "\U0001f440"
+def _busy_emoji(session_name: str | None = None) -> str:
+    """Return hourglass if session is busy, eyes if idle.
+
+    Args:
+        session_name: Session to check. If None, checks if any session is busy.
+    """
+    if session_name is not None:
+        return "\u23f3" if session_name in _busy_sessions else "\U0001f440"
+    return "\u23f3" if _busy_sessions else "\U0001f440"
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming photos: save to session cwd and forward path to Claude."""
-    global _busy
-
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -398,14 +402,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
-    caption = update.message.caption or ""
 
-    # Get highest resolution photo
+    if session.name in _busy_sessions:
+        await _set_reaction(context.bot, chat_id, message_id, "\u23f3")
+        await _reply(update, f"⏳ Session *{session.name}* is busy. "
+                     f"`/switch` to another or wait.")
+        return
+
+    caption = update.message.caption or ""
     photo = update.message.photo[-1]
 
-    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
     asyncio.create_task(_track_user(update))
-    _busy = True
+    _busy_sessions.add(session.name)
 
     try:
         photo_file = await photo.get_file()
@@ -425,14 +434,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Error handling photo")
         await _reply(update, f"Something went wrong with photo: {e}")
     finally:
-        _busy = False
+        _busy_sessions.discard(session.name)
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming documents: save to session cwd and forward path to Claude."""
-    global _busy
-
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -441,12 +448,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
+
+    if session.name in _busy_sessions:
+        await _set_reaction(context.bot, chat_id, message_id, "\u23f3")
+        await _reply(update, f"⏳ Session *{session.name}* is busy. "
+                     f"`/switch` to another or wait.")
+        return
+
     caption = update.message.caption or ""
     doc = update.message.document
 
-    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
     asyncio.create_task(_track_user(update))
-    _busy = True
+    _busy_sessions.add(session.name)
 
     try:
         doc_file = await doc.get_file()
@@ -465,13 +479,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.exception("Error handling document")
         await _reply(update, f"Something went wrong with document: {e}")
     finally:
-        _busy = False
+        _busy_sessions.discard(session.name)
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming voice messages: transcribe and send to Claude."""
-    global _busy
     try:
         from megobari.voice import INSTALL_HINT, get_transcriber, is_available
     except ImportError:
@@ -489,17 +502,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, "No active session. Use /new <name> first.")
         return
 
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+
+    if session.name in _busy_sessions:
+        await _set_reaction(context.bot, chat_id, message_id, "\u23f3")
+        await _reply(update, f"⏳ Session *{session.name}* is busy. "
+                     f"`/switch` to another or wait.")
+        return
+
     config: Config = context.bot_data.get("config")
     model_size = config.whisper_model if config else "small"
 
     voice = update.message.voice
-    chat_id = update.effective_chat.id
-    message_id = update.message.message_id
 
-    # React with appropriate emoji based on busy state
-    await _set_reaction(context.bot, chat_id, message_id, _busy_emoji())
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
     asyncio.create_task(_track_user(update))
-    _busy = True
+    _busy_sessions.add(session.name)
 
     tmp_path = None
     try:
@@ -527,7 +546,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Error handling voice message")
         await _reply(update, f"Something went wrong with voice: {e}")
     finally:
-        _busy = False
+        _busy_sessions.discard(session.name)
         await _set_reaction(context.bot, chat_id, message_id, None)
         # Clean up temp file
         if tmp_path:
@@ -1535,8 +1554,6 @@ async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages and send to Claude."""
-    global _busy
-
     sm = _get_sm(context)
     session = sm.current
     if session is None:
@@ -1547,11 +1564,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
 
-    # React immediately — before anything else
-    if _busy:
+    # If this session is already processing, reject with hint to switch
+    if session.name in _busy_sessions:
         await _set_reaction(context.bot, chat_id, message_id, "\u23f3")
-    else:
-        await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
+        await _reply(update, f"⏳ Session *{session.name}* is busy. "
+                     f"`/switch` to another or wait.")
+        return
+
+    await _set_reaction(context.bot, chat_id, message_id, "\U0001f440")
 
     # Fire-and-forget: track user in DB without blocking the handler
     asyncio.create_task(_track_user(update))
@@ -1562,11 +1582,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_text[:200] + ("..." if len(user_text) > 200 else ""),
     )
 
-    _busy = True
+    _busy_sessions.add(session.name)
     try:
         await _process_prompt(user_text, update, context)
     finally:
-        _busy = False
+        _busy_sessions.discard(session.name)
         await _set_reaction(context.bot, chat_id, message_id, None)
 
 
