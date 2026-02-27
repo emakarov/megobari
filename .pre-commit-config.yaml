@@ -27,3 +27,13 @@ repos:
         additional_dependencies: [tomli]
         args: ["--config=pyproject.toml"]
         exclude: ^src/megobari/db/migrations/
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: uv run pytest tests/ -x -q --no-header --tb=short
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false

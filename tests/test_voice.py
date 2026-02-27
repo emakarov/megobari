@@ -186,8 +186,8 @@ class TestHandleVoice:
 
         # Reaction should be set and cleared
         reaction_calls = ctx.bot.set_message_reaction.call_args_list
-        assert reaction_calls[0][1]["reaction"] == "\U0001f440"
-        assert reaction_calls[-1][1]["reaction"] is None
+        assert reaction_calls[0][1]["reaction"] == ["\U0001f440"]
+        assert reaction_calls[-1][1]["reaction"] == []
 
     @patch("megobari.voice.is_available", return_value=False)
     async def test_voice_not_available(self, mock_avail, session_manager):

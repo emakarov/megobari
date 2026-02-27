@@ -1517,13 +1517,20 @@ class StreamingAccumulator:
 async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -> None:
     """Set or remove a reaction on a message. Failures are silently ignored."""
     try:
-        await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=message_id,
-            reaction=emoji,
-        )
+        if emoji is None:
+            await bot.set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[],
+            )
+        else:
+            await bot.set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[emoji],
+            )
     except Exception:
-        pass
+        logger.debug("Failed to set reaction %r", emoji, exc_info=True)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

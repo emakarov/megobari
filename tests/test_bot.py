@@ -749,7 +749,7 @@ class TestSetReaction:
         await _set_reaction(bot, 123, 456, "\U0001f440")
 
         bot.set_message_reaction.assert_called_once_with(
-            chat_id=123, message_id=456, reaction="\U0001f440",
+            chat_id=123, message_id=456, reaction=["\U0001f440"],
         )
 
     async def test_remove_reaction(self):
@@ -759,7 +759,7 @@ class TestSetReaction:
         await _set_reaction(bot, 123, 456, None)
 
         bot.set_message_reaction.assert_called_once_with(
-            chat_id=123, message_id=456, reaction=None,
+            chat_id=123, message_id=456, reaction=[],
         )
 
     async def test_failure_ignored(self):
@@ -784,8 +784,9 @@ class TestHandleMessage:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_basic_response(self, mock_send, session_manager):
+    async def test_basic_response(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = ("Hello!", [], "sid-123", QueryUsage())
@@ -802,11 +803,12 @@ class TestHandleMessage:
         # Reaction should have been set and cleared
         calls = ctx.bot.set_message_reaction.call_args_list
         assert len(calls) >= 2
-        assert calls[0][1]["reaction"] == "\U0001f440"
-        assert calls[-1][1]["reaction"] is None
+        assert calls[0][1]["reaction"] == ["\U0001f440"]
+        assert calls[-1][1]["reaction"] == []
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_with_tool_uses(self, mock_send, session_manager):
+    async def test_with_tool_uses(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = (
@@ -825,8 +827,9 @@ class TestHandleMessage:
         # Should have sent at least one reply with formatted tool summary
         assert update.message.reply_text.call_count >= 1
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_updates_session_id(self, mock_send, session_manager):
+    async def test_updates_session_id(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = ("Hello!", [], "new-sid", QueryUsage())
@@ -839,8 +842,9 @@ class TestHandleMessage:
 
         assert session_manager.get("s").session_id == "new-sid"
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_error_handling(self, mock_send, session_manager):
+    async def test_error_handling(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.side_effect = RuntimeError("boom")
@@ -855,10 +859,13 @@ class TestHandleMessage:
         assert "Something went wrong" in text
         # Reaction should still be cleared in finally
         last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
-        assert last_reaction[1]["reaction"] is None
+        assert last_reaction[1]["reaction"] == []
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_non_streaming_tool_status_message(self, mock_send, session_manager):
+    async def test_non_streaming_tool_status_message(
+        self, mock_send, mock_recall, session_manager,
+    ):
         from megobari.bot import handle_message
 
         async def fake_send(
@@ -886,8 +893,9 @@ class TestHandleMessage:
 
 
 class TestHandleMessageStreaming:
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_streaming_basic(self, mock_send, session_manager):
+    async def test_streaming_basic(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = ("Streamed!", [], "sid-s", QueryUsage())
@@ -907,8 +915,9 @@ class TestHandleMessageStreaming:
         assert "on_text_chunk" in call_kwargs
         assert "on_tool_use" in call_kwargs
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_streaming_with_tools(self, mock_send, session_manager):
+    async def test_streaming_with_tools(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = (
@@ -932,8 +941,9 @@ class TestHandleMessageStreaming:
         any_tool_call = any("\u26a1" in str(c) for c in calls)
         assert any_tool_call
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_streaming_long_text_splits(self, mock_send, session_manager):
+    async def test_streaming_long_text_splits(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         long_text = "word " * 2000  # well beyond 4096
@@ -961,8 +971,9 @@ class TestHandleMessageStreaming:
         # (delete of original msg + split messages)
         assert update.message.reply_text.call_count >= 2
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
-    async def test_streaming_no_session_id_update(self, mock_send, session_manager):
+    async def test_streaming_no_session_id_update(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
         mock_send.return_value = ("ok", [], None, QueryUsage())
@@ -978,10 +989,11 @@ class TestHandleMessageStreaming:
 
         assert session_manager.get("s").session_id is None
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
     @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
     async def test_streaming_action_blocks(
-        self, mock_exec, mock_send, session_manager
+        self, mock_exec, mock_send, mock_recall, session_manager
     ):
         from megobari.bot import handle_message
 
@@ -1024,10 +1036,11 @@ class TestHandleMessageStreaming:
         last_edit = edit_calls[-1][0][0]
         assert "```megobari" not in last_edit
 
+    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
     @patch("megobari.bot.send_to_claude")
     @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
     async def test_streaming_action_errors_reported(
-        self, mock_exec, mock_send, session_manager
+        self, mock_exec, mock_send, mock_recall, session_manager
     ):
         from megobari.bot import handle_message
 
@@ -1249,7 +1262,7 @@ class TestHandlePhoto:
         assert "Something went wrong with photo" in text
         # Reaction should be cleared
         last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
-        assert last_reaction[1]["reaction"] is None
+        assert last_reaction[1]["reaction"] == []
 
 
 class TestHandleDocument:
@@ -1364,7 +1377,7 @@ class TestHandleDocument:
         assert "Something went wrong with document" in text
         # Reaction should be cleared
         last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
-        assert last_reaction[1]["reaction"] is None
+        assert last_reaction[1]["reaction"] == []
 
 
 class TestSendTypingPeriodically:

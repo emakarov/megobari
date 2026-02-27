@@ -104,11 +104,16 @@ def _patch_message_parser() -> None:
 
     def _patched_parse(data):
         try:
-            return _original_parse(data)
+            result = _original_parse(data)
         except MessageParseError:
             msg_type = data.get("type", "unknown") if isinstance(data, dict) else "unknown"
             logger.debug("Skipping unknown SDK message type: %s", msg_type)
             return SystemMessage(subtype=msg_type, data=data if isinstance(data, dict) else {})
+        # Some SDK versions return None for unknown types instead of raising
+        if result is None:
+            msg_type = data.get("type", "unknown") if isinstance(data, dict) else "unknown"
+            logger.debug("SDK returned None for message type: %s", msg_type)
+        return result
 
     mp.parse_message = _patched_parse
     internal_client.parse_message = _patched_parse
