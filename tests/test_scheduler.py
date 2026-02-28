@@ -96,38 +96,40 @@ class TestSchedulerLifecycle:
 
 
 class TestSchedulerHeartbeat:
-    @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_creates_default_file(self, mock_send, tmp_path):
-        from megobari.scheduler import _HEARTBEAT_FILE
+    async def _add_check(self, name: str = "disk", prompt: str = "Check disk usage"):
+        from megobari.db import Repository, get_session
 
-        mock_send.return_value = ("HEARTBEAT_OK", [], None, MagicMock())
-        s = _make_scheduler(cwd=str(tmp_path))
-
-        await s._run_heartbeat()
-
-        heartbeat_path = tmp_path / _HEARTBEAT_FILE
-        assert heartbeat_path.exists()
-        assert "Heartbeat checklist" in heartbeat_path.read_text()
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check(name=name, prompt=prompt)
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_ok_no_notification(self, mock_send, tmp_path):
-        mock_send.return_value = ("HEARTBEAT_OK", [], None, MagicMock())
-        s = _make_scheduler(cwd=str(tmp_path))
-
+    async def test_heartbeat_no_checks_skips(self, mock_send):
+        s = _make_scheduler()
         await s._run_heartbeat()
-
-        # Bot should NOT have been called since response contains HEARTBEAT_OK
+        mock_send.assert_not_called()
         s._bot.send_message.assert_not_called()
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_alert_sends_message(self, mock_send, tmp_path):
+    async def test_heartbeat_ok_no_notification(self, mock_send):
+        await self._add_check()
+        mock_send.return_value = ("HEARTBEAT_OK", [], None, MagicMock())
+        s = _make_scheduler()
+
+        await s._run_heartbeat()
+
+        s._bot.send_message.assert_not_called()
+
+    @patch("megobari.scheduler.send_to_claude")
+    async def test_heartbeat_alert_sends_message(self, mock_send):
+        await self._add_check()
         mock_send.return_value = (
             "Background task completed: build succeeded",
             [],
             None,
             MagicMock(),
         )
-        s = _make_scheduler(cwd=str(tmp_path))
+        s = _make_scheduler()
 
         await s._run_heartbeat()
 
@@ -137,25 +139,41 @@ class TestSchedulerHeartbeat:
         assert "build succeeded" in msg
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_reads_existing_file(self, mock_send, tmp_path):
-        from megobari.scheduler import _HEARTBEAT_FILE
-
-        heartbeat_path = tmp_path / _HEARTBEAT_FILE
-        heartbeat_path.write_text("- Check CI pipeline\n- Review PRs\n")
-
+    async def test_heartbeat_builds_prompt_from_db(self, mock_send):
+        await self._add_check("ci", "Check CI pipeline")
+        await self._add_check("prs", "Review open PRs")
         mock_send.return_value = ("HEARTBEAT_OK", [], None, MagicMock())
-        s = _make_scheduler(cwd=str(tmp_path))
+        s = _make_scheduler()
 
         await s._run_heartbeat()
 
-        # Verify the prompt passed to send_to_claude includes the file content
         prompt = mock_send.call_args[1]["prompt"]
         assert "Check CI pipeline" in prompt
+        assert "Review open PRs" in prompt
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_long_message_truncated(self, mock_send, tmp_path):
+    async def test_heartbeat_skips_disabled_checks(self, mock_send):
+        from megobari.db import Repository, get_session
+
+        await self._add_check("active", "Active check")
+        await self._add_check("paused", "Paused check")
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.toggle_heartbeat_check("paused", enabled=False)
+
+        mock_send.return_value = ("HEARTBEAT_OK", [], None, MagicMock())
+        s = _make_scheduler()
+        await s._run_heartbeat()
+
+        prompt = mock_send.call_args[1]["prompt"]
+        assert "Active check" in prompt
+        assert "Paused check" not in prompt
+
+    @patch("megobari.scheduler.send_to_claude")
+    async def test_heartbeat_long_message_truncated(self, mock_send):
+        await self._add_check()
         mock_send.return_value = ("x" * 5000, [], None, MagicMock())
-        s = _make_scheduler(cwd=str(tmp_path))
+        s = _make_scheduler()
 
         await s._run_heartbeat()
 
@@ -163,21 +181,22 @@ class TestSchedulerHeartbeat:
         assert len(msg) <= 4000
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_error_handled(self, mock_send, tmp_path):
+    async def test_heartbeat_error_handled(self, mock_send):
+        await self._add_check()
         mock_send.side_effect = RuntimeError("boom")
-        s = _make_scheduler(cwd=str(tmp_path))
+        s = _make_scheduler()
 
         # Should not raise
         await s._run_heartbeat()
 
     @patch("megobari.scheduler.send_to_claude")
-    async def test_heartbeat_empty_response(self, mock_send, tmp_path):
+    async def test_heartbeat_empty_response(self, mock_send):
+        await self._add_check()
         mock_send.return_value = ("", [], None, MagicMock())
-        s = _make_scheduler(cwd=str(tmp_path))
+        s = _make_scheduler()
 
         await s._run_heartbeat()
 
-        # Empty response should not trigger notification
         s._bot.send_message.assert_not_called()
 
 

@@ -191,6 +191,25 @@ class CronJob(Base):
         return f"<CronJob name={self.name!r} cron={self.cron_expression!r} [{state}]>"
 
 
+class HeartbeatCheck(Base):
+    """A single heartbeat monitoring check item."""
+
+    __tablename__ = "heartbeat_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of HeartbeatCheck."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<HeartbeatCheck name={self.name!r} [{state}]>"
+
+
 class Memory(Base):
     """Long-term factual memory — things learned about the user or context."""
 

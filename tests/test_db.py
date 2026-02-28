@@ -797,3 +797,115 @@ async def test_cron_job_repr_disabled():
         await s.flush()
     r = repr(job)
     assert "disabled" in r
+
+
+# ---------------------------------------------------------------
+# Heartbeat Checks
+# ---------------------------------------------------------------
+
+
+async def test_add_heartbeat_check():
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.add_heartbeat_check("disk", "Check disk usage > 90%")
+    assert check.id is not None
+    assert check.name == "disk"
+    assert check.prompt == "Check disk usage > 90%"
+    assert check.enabled is True
+
+
+async def test_list_heartbeat_checks():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_heartbeat_check("disk", "Check disk")
+        await repo.add_heartbeat_check("mem", "Check memory")
+        checks = await repo.list_heartbeat_checks()
+    assert len(checks) == 2
+    assert checks[0].name == "disk"
+    assert checks[1].name == "mem"
+
+
+async def test_list_heartbeat_checks_enabled_only():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_heartbeat_check("active", "Active check")
+        c = await repo.add_heartbeat_check("paused", "Paused check")
+        c.enabled = False
+        await s.flush()
+        checks = await repo.list_heartbeat_checks(enabled_only=True)
+    assert len(checks) == 1
+    assert checks[0].name == "active"
+
+
+async def test_get_heartbeat_check():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_heartbeat_check("disk", "Check disk")
+        check = await repo.get_heartbeat_check("disk")
+    assert check is not None
+    assert check.name == "disk"
+
+
+async def test_get_heartbeat_check_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.get_heartbeat_check("nope")
+    assert check is None
+
+
+async def test_delete_heartbeat_check():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_heartbeat_check("disk", "Check disk")
+        deleted = await repo.delete_heartbeat_check("disk")
+    assert deleted is True
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.get_heartbeat_check("disk")
+    assert check is None
+
+
+async def test_delete_heartbeat_check_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_heartbeat_check("nope")
+    assert deleted is False
+
+
+async def test_toggle_heartbeat_check():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_heartbeat_check("disk", "Check disk")
+        check = await repo.toggle_heartbeat_check("disk", enabled=False)
+    assert check is not None
+    assert check.enabled is False
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.toggle_heartbeat_check("disk", enabled=True)
+    assert check.enabled is True
+
+
+async def test_toggle_heartbeat_check_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.toggle_heartbeat_check("nope", enabled=False)
+    assert check is None
+
+
+async def test_heartbeat_check_repr():
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.add_heartbeat_check("disk", "Check disk")
+    r = repr(check)
+    assert "disk" in r
+    assert "enabled" in r
+
+
+async def test_heartbeat_check_repr_disabled():
+    async with get_session() as s:
+        repo = Repository(s)
+        check = await repo.add_heartbeat_check("disk", "Check disk")
+        check.enabled = False
+        await s.flush()
+    r = repr(check)
+    assert "disabled" in r

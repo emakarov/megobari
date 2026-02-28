@@ -1586,7 +1586,7 @@ class TestCmdCron:
 
 
 class TestCmdHeartbeat:
-    async def test_status_stopped(self, sm_with_session):
+    async def test_status_stopped_no_checks(self, sm_with_session):
         from megobari.bot import cmd_heartbeat
 
         update = _make_update()
@@ -1596,9 +1596,15 @@ class TestCmdHeartbeat:
         await cmd_heartbeat(update, ctx)
         text = update.message.reply_text.call_args[0][0]
         assert "stopped" in text.lower()
+        assert "No checks" in text
 
-    async def test_status_running(self, sm_with_session):
+    async def test_status_running_with_checks(self, sm_with_session):
         from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check("disk", "Check disk usage")
 
         mock_scheduler = MagicMock()
         mock_scheduler.running = True
@@ -1609,6 +1615,201 @@ class TestCmdHeartbeat:
         await cmd_heartbeat(update, ctx)
         text = update.message.reply_text.call_args[0][0]
         assert "running" in text.lower()
+        assert "disk" in text
+
+    async def test_add_check(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session, args=["add", "disk", "Check", "disk", "usage"]
+        )
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "disk" in text
+        assert "added" in text.lower() or "✅" in text
+
+        # Verify in DB
+        async with get_session() as s:
+            repo = Repository(s)
+            check = await repo.get_heartbeat_check("disk")
+        assert check is not None
+        assert check.prompt == "Check disk usage"
+
+    async def test_add_check_duplicate(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check("disk", "Check disk")
+
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session, args=["add", "disk", "Another", "check"]
+        )
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "already exists" in text
+
+    async def test_add_check_missing_args(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["add", "disk"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_remove_check(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check("disk", "Check disk")
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove", "disk"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Deleted" in text
+
+        async with get_session() as s:
+            repo = Repository(s)
+            check = await repo.get_heartbeat_check("disk")
+        assert check is None
+
+    async def test_remove_check_not_found(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove", "nope"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_pause_check(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check("disk", "Check disk")
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause", "disk"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Paused" in text
+
+        async with get_session() as s:
+            repo = Repository(s)
+            check = await repo.get_heartbeat_check("disk")
+        assert check.enabled is False
+
+    async def test_resume_check(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_heartbeat_check("disk", "Check disk")
+            await repo.toggle_heartbeat_check("disk", enabled=False)
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume", "disk"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Resumed" in text
+
+        async with get_session() as s:
+            repo = Repository(s)
+            check = await repo.get_heartbeat_check("disk")
+        assert check.enabled is True
+
+    async def test_remove_missing_args(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_pause_missing_args(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_pause_not_found(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause", "nope"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_resume_missing_args(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_resume_not_found(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume", "nope"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    @patch("megobari.handlers.scheduling.get_session")
+    async def test_status_db_error(self, mock_gs, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        mock_gs.side_effect = Exception("DB down")
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No checks" in text
 
     async def test_start(self, sm_with_session):
         from megobari.bot import cmd_heartbeat
@@ -1618,7 +1819,6 @@ class TestCmdHeartbeat:
         ctx.bot_data["scheduler"] = None
         ctx.bot_data["config"] = None
         await cmd_heartbeat(update, ctx)
-        # Scheduler should be stored in bot_data
         scheduler = ctx.bot_data["scheduler"]
         assert scheduler is not None
         assert scheduler.running is True

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from megobari.db.models import (
     ConversationSummary,
     CronJob,
+    HeartbeatCheck,
     Memory,
     Message,
     Persona,
@@ -591,3 +592,60 @@ class Repository:
             .values(last_run_at=_utcnow())
         )
         await self.session.execute(stmt)
+
+    # ------------------------------------------------------------------
+    # Heartbeat Checks
+    # ------------------------------------------------------------------
+
+    async def add_heartbeat_check(
+        self,
+        name: str,
+        prompt: str,
+    ) -> HeartbeatCheck:
+        """Create a new heartbeat check."""
+        check = HeartbeatCheck(name=name, prompt=prompt)
+        self.session.add(check)
+        await self.session.flush()
+        return check
+
+    async def list_heartbeat_checks(
+        self, enabled_only: bool = False
+    ) -> list[HeartbeatCheck]:
+        """List all heartbeat checks."""
+        stmt = select(HeartbeatCheck).order_by(
+            HeartbeatCheck.created_at.asc()
+        )
+        if enabled_only:
+            stmt = stmt.where(HeartbeatCheck.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_heartbeat_check(
+        self, name: str
+    ) -> HeartbeatCheck | None:
+        """Get a heartbeat check by name."""
+        stmt = select(HeartbeatCheck).where(
+            HeartbeatCheck.name == name
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def delete_heartbeat_check(self, name: str) -> bool:
+        """Delete a heartbeat check by name. Returns True if deleted."""
+        check = await self.get_heartbeat_check(name)
+        if check is None:
+            return False
+        await self.session.delete(check)
+        await self.session.flush()
+        return True
+
+    async def toggle_heartbeat_check(
+        self, name: str, enabled: bool
+    ) -> HeartbeatCheck | None:
+        """Enable or disable a heartbeat check."""
+        check = await self.get_heartbeat_check(name)
+        if check is None:
+            return None
+        check.enabled = enabled
+        await self.session.flush()
+        return check

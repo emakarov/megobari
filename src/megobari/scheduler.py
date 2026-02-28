@@ -17,16 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Heartbeat defaults
 _HEARTBEAT_INTERVAL_MIN = 30
-_HEARTBEAT_FILE = "HEARTBEAT.md"
 _HEARTBEAT_OK = "HEARTBEAT_OK"
-
-_DEFAULT_HEARTBEAT_CONTENT = """\
-# Heartbeat checklist
-
-- Check if any background tasks have completed
-- If anything important happened recently, summarize it briefly
-- Otherwise respond with HEARTBEAT_OK
-"""
 
 
 class Scheduler:
@@ -162,21 +153,26 @@ class Scheduler:
     # -- heartbeat --
 
     async def _run_heartbeat(self) -> None:
-        """Run heartbeat: read HEARTBEAT.md, send to Claude, notify if needed."""
-        heartbeat_path = Path(self._cwd) / _HEARTBEAT_FILE
-        if not heartbeat_path.exists():
-            # Create default heartbeat file
-            heartbeat_path.write_text(_DEFAULT_HEARTBEAT_CONTENT)
-            logger.info("Created default %s", heartbeat_path)
-
+        """Run heartbeat: load checks from DB, send to Claude, notify if needed."""
         try:
-            checklist = heartbeat_path.read_text()
+            async with get_session() as s:
+                repo = Repository(s)
+                checks = await repo.list_heartbeat_checks(enabled_only=True)
         except Exception:
-            logger.debug("Failed to read heartbeat file", exc_info=True)
+            logger.debug("Failed to load heartbeat checks", exc_info=True)
             return
 
+        if not checks:
+            logger.debug("No heartbeat checks configured — skipping")
+            return
+
+        checklist = "\n".join(
+            f"- [{c.name}] {c.prompt}" for c in checks
+        )
+
         prompt = (
-            "This is an automated heartbeat check. Process this checklist and respond:\n"
+            "This is an automated heartbeat check. "
+            "Process each check below and respond:\n"
             "- If nothing needs attention, respond with exactly: HEARTBEAT_OK\n"
             "- If something needs the user's attention, describe it briefly.\n\n"
             f"{checklist}"
@@ -184,14 +180,17 @@ class Scheduler:
 
         try:
             session = Session(name="_heartbeat", cwd=self._cwd)
-            response, _, _, _ = await send_to_claude(prompt=prompt, session=session)
+            response, _, _, _ = await send_to_claude(
+                prompt=prompt, session=session
+            )
 
             if response and _HEARTBEAT_OK not in response:
-                # Something needs attention — notify user
                 msg = f"💓 *Heartbeat*\n\n{response}"
                 if len(msg) > 4000:
                     msg = msg[:3997] + "..."
-                await self._bot.send_message(chat_id=self._chat_id, text=msg)
+                await self._bot.send_message(
+                    chat_id=self._chat_id, text=msg
+                )
             else:
                 logger.debug("Heartbeat OK — nothing to report")
         except Exception:

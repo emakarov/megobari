@@ -4,6 +4,7 @@ from megobari.db.engine import close_db, get_session, init_db
 from megobari.db.models import (
     Base,
     ConversationSummary,
+    HeartbeatCheck,
     Memory,
     Message,
     Persona,
@@ -15,6 +16,7 @@ from megobari.db.repository import Repository
 __all__ = [
     "Base",
     "ConversationSummary",
+    "HeartbeatCheck",
     "Memory",
     "Message",
     "Persona",
