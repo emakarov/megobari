@@ -215,9 +215,11 @@ def format_help(fmt: Formatter | None = None) -> str:
         ("/history", "Browse past conversations"),
         ("/compact", "Summarize and reset context"),
         ("/doctor", "Run health checks"),
+        ("/migrate", "Run database migrations"),
         (f"/autonomous {fmt.code('[on|off]')}", "Toggle autonomous mode"),
         (f"/cron {fmt.code('[sub]')}", "Manage scheduled tasks"),
         (f"/heartbeat {fmt.code('[on|off]')}", "Manage heartbeat daemon"),
+        ("/monitor", "Website monitoring"),
         ("/help", "Show this message"),
     ]
     lines = [title, ""]
