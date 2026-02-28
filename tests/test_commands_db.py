@@ -340,7 +340,7 @@ class TestCmdPersona:
 
 
 class TestCmdMcp:
-    @patch("megobari.bot.list_available_servers", return_value=[])
+    @patch("megobari.handlers.persona.list_available_servers", return_value=[])
     async def test_no_servers(self, mock_list, session_manager):
         from megobari.bot import cmd_mcp
 
@@ -351,7 +351,7 @@ class TestCmdMcp:
         assert "No MCP servers" in text
 
     @patch(
-        "megobari.bot.list_available_servers",
+        "megobari.handlers.persona.list_available_servers",
         return_value=["figma", "github", "sgerp"],
     )
     async def test_lists_servers(self, mock_list, session_manager):
@@ -367,7 +367,7 @@ class TestCmdMcp:
 
 
 class TestCmdSkills:
-    @patch("megobari.bot.discover_skills", return_value=[])
+    @patch("megobari.handlers.persona.discover_skills", return_value=[])
     async def test_no_skills(self, mock_discover, session_manager):
         from megobari.bot import cmd_skills
 
@@ -378,7 +378,7 @@ class TestCmdSkills:
         assert "No skills" in text
 
     @patch(
-        "megobari.bot.discover_skills",
+        "megobari.handlers.persona.discover_skills",
         return_value=["clickhouse-best-practices", "find-skills", "jira"],
     )
     async def test_lists_skills(self, mock_discover, session_manager):

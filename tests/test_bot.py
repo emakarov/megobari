@@ -784,8 +784,11 @@ class TestHandleMessage:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_basic_response(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -806,8 +809,11 @@ class TestHandleMessage:
         assert calls[0][1]["reaction"] == ["\U0001f440"]
         assert calls[-1][1]["reaction"] == []
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_with_tool_uses(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -827,8 +833,11 @@ class TestHandleMessage:
         # Should have sent at least one reply with formatted tool summary
         assert update.message.reply_text.call_count >= 1
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_updates_session_id(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -842,8 +851,11 @@ class TestHandleMessage:
 
         assert session_manager.get("s").session_id == "new-sid"
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_error_handling(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -861,8 +873,11 @@ class TestHandleMessage:
         last_reaction = ctx.bot.set_message_reaction.call_args_list[-1]
         assert last_reaction[1]["reaction"] == []
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_non_streaming_tool_status_message(
         self, mock_send, mock_recall, session_manager,
     ):
@@ -916,8 +931,11 @@ class TestPerSessionConcurrency:
         finally:
             _busy_sessions.discard("s")
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_different_session_not_blocked(
         self, mock_send, mock_recall, session_manager,
     ):
@@ -977,8 +995,11 @@ class TestPerSessionConcurrency:
         finally:
             _busy_sessions.discard("s")
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_session_cleared_after_completion(
         self, mock_send, mock_recall, session_manager,
     ):
@@ -995,8 +1016,11 @@ class TestPerSessionConcurrency:
         # Session should no longer be busy
         assert "s" not in _busy_sessions
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_session_cleared_after_error(
         self, mock_send, mock_recall, session_manager,
     ):
@@ -1015,8 +1039,11 @@ class TestPerSessionConcurrency:
 
 
 class TestHandleMessageStreaming:
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_streaming_basic(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -1037,8 +1064,11 @@ class TestHandleMessageStreaming:
         assert "on_text_chunk" in call_kwargs
         assert "on_tool_use" in call_kwargs
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_streaming_with_tools(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -1063,8 +1093,11 @@ class TestHandleMessageStreaming:
         any_tool_call = any("\u26a1" in str(c) for c in calls)
         assert any_tool_call
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_streaming_long_text_splits(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -1093,8 +1126,11 @@ class TestHandleMessageStreaming:
         # (delete of original msg + split messages)
         assert update.message.reply_text.call_count >= 2
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
     async def test_streaming_no_session_id_update(self, mock_send, mock_recall, session_manager):
         from megobari.bot import handle_message
 
@@ -1111,9 +1147,12 @@ class TestHandleMessageStreaming:
 
         assert session_manager.get("s").session_id is None
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
-    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
+    @patch("megobari.handlers.claude.execute_actions", new_callable=AsyncMock)
     async def test_streaming_action_blocks(
         self, mock_exec, mock_send, mock_recall, session_manager
     ):
@@ -1158,9 +1197,12 @@ class TestHandleMessageStreaming:
         last_edit = edit_calls[-1][0][0]
         assert "```megobari" not in last_edit
 
-    @patch("megobari.bot.build_recall_context", new_callable=AsyncMock, return_value=None)
-    @patch("megobari.bot.send_to_claude")
-    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    @patch(
+        "megobari.handlers.claude.build_recall_context",
+        new_callable=AsyncMock, return_value=None,
+    )
+    @patch("megobari.handlers.claude.send_to_claude")
+    @patch("megobari.handlers.claude.execute_actions", new_callable=AsyncMock)
     async def test_streaming_action_errors_reported(
         self, mock_exec, mock_send, mock_recall, session_manager
     ):
@@ -1202,8 +1244,8 @@ class TestHandleMessageStreaming:
 class TestHandleMessageActions:
     """Test action protocol integration in non-streaming handle_message."""
 
-    @patch("megobari.bot.send_to_claude")
-    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude.send_to_claude")
+    @patch("megobari.handlers.claude.execute_actions", new_callable=AsyncMock)
     async def test_non_streaming_action_blocks(
         self, mock_exec, mock_send, session_manager
     ):
@@ -1234,8 +1276,8 @@ class TestHandleMessageActions:
         reply_text = update.message.reply_text.call_args[0][0]
         assert "```megobari" not in reply_text
 
-    @patch("megobari.bot.send_to_claude")
-    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude.send_to_claude")
+    @patch("megobari.handlers.claude.execute_actions", new_callable=AsyncMock)
     async def test_non_streaming_action_errors(
         self, mock_exec, mock_send, session_manager
     ):
@@ -1260,8 +1302,8 @@ class TestHandleMessageActions:
         any_error = any("⚠️" in str(c) for c in reply_calls)
         assert any_error
 
-    @patch("megobari.bot.send_to_claude")
-    @patch("megobari.bot.execute_actions", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude.send_to_claude")
+    @patch("megobari.handlers.claude.execute_actions", new_callable=AsyncMock)
     async def test_non_streaming_action_with_tools(
         self, mock_exec, mock_send, session_manager
     ):
@@ -1295,7 +1337,7 @@ class TestHandleMessageActions:
 
 
 class TestHandlePhoto:
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_photo_saved_and_forwarded(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_photo
 
@@ -1327,7 +1369,7 @@ class TestHandlePhoto:
         assert "photo_42.jpg" in prompt
         assert "Please look at the image" in prompt
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_photo_with_caption(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_photo
 
@@ -1362,7 +1404,7 @@ class TestHandlePhoto:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_photo_error_handling(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_photo
 
@@ -1388,7 +1430,7 @@ class TestHandlePhoto:
 
 
 class TestHandleDocument:
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_document_saved_and_forwarded(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_document
 
@@ -1417,7 +1459,7 @@ class TestHandleDocument:
         assert "report.pdf" in prompt
         assert "Please examine the file" in prompt
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_document_with_caption(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_document
 
@@ -1441,7 +1483,7 @@ class TestHandleDocument:
         prompt = mock_process.call_args[0][0]
         assert "Please analyze" in prompt
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_document_no_filename(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_document
 
@@ -1476,7 +1518,7 @@ class TestHandleDocument:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     async def test_document_error_handling(self, mock_process, session_manager, tmp_path):
         from megobari.bot import handle_document
 

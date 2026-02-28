@@ -274,7 +274,7 @@ class TestCmdUsage:
 
 
 class TestAccumulateUsage:
-    @patch("megobari.bot._persist_usage", new_callable=AsyncMock)
+    @patch("megobari.handlers._common._persist_usage", new_callable=AsyncMock)
     async def test_accumulate_new_session(self, mock_persist, session_manager):
         from megobari.bot import SessionUsage, _accumulate_usage
 
@@ -288,7 +288,7 @@ class TestAccumulateUsage:
         assert su.total_turns == 3
         assert su.message_count == 1
 
-    @patch("megobari.bot._persist_usage", new_callable=AsyncMock)
+    @patch("megobari.handlers._common._persist_usage", new_callable=AsyncMock)
     async def test_accumulate_existing_session(self, mock_persist, session_manager):
         from megobari.bot import _accumulate_usage
 
@@ -304,7 +304,7 @@ class TestAccumulateUsage:
         assert su.total_duration_ms == 13000
         assert su.message_count == 2
 
-    @patch("megobari.bot._persist_usage", new_callable=AsyncMock)
+    @patch("megobari.handlers._common._persist_usage", new_callable=AsyncMock)
     async def test_accumulate_fires_persist(self, mock_persist, session_manager):
         from megobari.bot import _accumulate_usage
 
@@ -346,7 +346,7 @@ class TestCmdCompact:
         text = update.message.reply_text.call_args[0][0]
         assert "No active context" in text
 
-    @patch("megobari.bot.send_to_claude")
+    @patch("megobari.handlers.usage.send_to_claude")
     async def test_compact_success(self, mock_send, sm_with_session):
         from megobari.bot import cmd_compact
 
@@ -914,7 +914,7 @@ class TestHistorySearchWithResults:
 class TestContextDBError:
     """Cover the DB error path for /context."""
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.usage.get_session")
     async def test_context_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_context
 
@@ -931,7 +931,7 @@ class TestContextDBError:
 class TestUsageDBError:
     """Cover DB error paths for /usage."""
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.usage.get_session")
     async def test_usage_all_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_usage
 
@@ -1308,7 +1308,7 @@ class TestCmdCron:
         assert "morning" in text
         assert "0 7 * * *" in text
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.scheduling.get_session")
     async def test_list_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_cron
 
@@ -1496,7 +1496,7 @@ class TestCmdCron:
         text = update.message.reply_text.call_args[0][0]
         assert "Usage" in text
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.scheduling.get_session")
     async def test_remove_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_cron
 
@@ -1507,7 +1507,7 @@ class TestCmdCron:
         text = update.message.reply_text.call_args[0][0]
         assert "Failed" in text
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.scheduling.get_session")
     async def test_pause_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_cron
 
@@ -1518,7 +1518,7 @@ class TestCmdCron:
         text = update.message.reply_text.call_args[0][0]
         assert "Failed" in text
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.scheduling.get_session")
     async def test_resume_db_failure(self, mock_gs, sm_with_session):
         from megobari.bot import cmd_cron
 
@@ -1529,7 +1529,7 @@ class TestCmdCron:
         text = update.message.reply_text.call_args[0][0]
         assert "Failed" in text
 
-    @patch("megobari.bot.get_session")
+    @patch("megobari.handlers.scheduling.get_session")
     async def test_add_db_failure(self, mock_gs, sm_with_session):
         """Cover the generic exception path when creating a job fails."""
         # First call succeeds (croniter validation), second call (DB) fails

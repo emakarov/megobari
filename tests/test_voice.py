@@ -151,7 +151,7 @@ def _make_voice_update():
 
 
 class TestHandleVoice:
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
@@ -213,7 +213,7 @@ class TestHandleVoice:
         text = update.message.reply_text.call_args[0][0]
         assert "No active session" in text
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
@@ -242,7 +242,7 @@ class TestHandleVoice:
         assert "Could not transcribe" in text
         mock_process.assert_not_called()
 
-    @patch("megobari.bot._process_prompt", new_callable=AsyncMock)
+    @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
     @patch("megobari.voice.is_available", return_value=True)
     @patch("megobari.voice.get_transcriber")
     @patch("asyncio.to_thread", new_callable=AsyncMock)
