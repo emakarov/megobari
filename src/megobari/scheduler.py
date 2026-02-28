@@ -23,6 +23,8 @@ _HEARTBEAT_OK = "HEARTBEAT_OK"
 class Scheduler:
     """Manages cron jobs and heartbeat. Runs as an asyncio background task."""
 
+    _MONITOR_HOURS = {8, 12, 16, 20}
+
     def __init__(
         self,
         bot,
@@ -67,11 +69,18 @@ class Scheduler:
         """Run cron checks every 60 seconds."""
         try:
             last_heartbeat = datetime.now(timezone.utc)
+            last_monitor_hour: int | None = None
             while not self._stop_event.is_set():
                 now = datetime.now(timezone.utc)
 
                 # Check cron jobs
                 await self._run_due_crons(now)
+
+                # Monitor checks (4x daily)
+                current_hour = now.hour
+                if current_hour in self._MONITOR_HOURS and current_hour != last_monitor_hour:
+                    last_monitor_hour = current_hour
+                    asyncio.create_task(self._run_monitor_checks())
 
                 # Heartbeat check
                 if self._heartbeat_interval > 0:
@@ -149,6 +158,27 @@ class Scheduler:
                 )
             except Exception:
                 pass
+
+    # -- monitor checks --
+
+    async def _run_monitor_checks(self) -> None:
+        """Run website monitor checks and notify subscribers."""
+        from megobari.monitor import _format_digest_message, notify_subscribers, run_monitor_check
+
+        hour = datetime.now(timezone.utc).hour
+        run_labels = {8: "Morning", 12: "Noon", 16: "Afternoon", 20: "Evening"}
+        label = run_labels.get(hour, f"{hour}:00")
+
+        try:
+            digests = await run_monitor_check()
+            if digests:
+                await notify_subscribers(digests, label)
+                msg = _format_digest_message(digests, label)
+                if len(msg) > 4000:
+                    msg = msg[:3997] + "..."
+                await self._bot.send_message(chat_id=self._chat_id, text=msg)
+        except Exception:
+            logger.exception("Monitor check failed")
 
     # -- heartbeat --
 
