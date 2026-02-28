@@ -5,15 +5,23 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import sqlalchemy as sa
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from megobari.db.models import (
     ConversationSummary,
     CronJob,
+    DashboardToken,
     HeartbeatCheck,
     Memory,
     Message,
+    MonitorDigest,
+    MonitorEntity,
+    MonitorResource,
+    MonitorSnapshot,
+    MonitorSubscriber,
+    MonitorTopic,
     Persona,
     UsageRecord,
     User,
@@ -335,6 +343,19 @@ class Repository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_recent_messages_all(
+        self,
+        limit: int = 30,
+    ) -> list[Message]:
+        """Get most recent messages across all sessions (newest first)."""
+        stmt = (
+            select(Message)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # ------------------------------------------------------------------
     # Memories
     # ------------------------------------------------------------------
@@ -649,3 +670,383 @@ class Repository:
         check.enabled = enabled
         await self.session.flush()
         return check
+
+    # ------------------------------------------------------------------
+    # Dashboard Tokens
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hash_token(token: str) -> str:
+        """Hash a dashboard token for storage."""
+        import hashlib
+
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    async def create_dashboard_token(
+        self, name: str, token: str
+    ) -> DashboardToken:
+        """Store a new dashboard token (hashed)."""
+        dt = DashboardToken(
+            name=name,
+            token_hash=self._hash_token(token),
+            token_prefix=token[:8],
+        )
+        self.session.add(dt)
+        await self.session.flush()
+        return dt
+
+    async def verify_dashboard_token(self, token: str) -> DashboardToken | None:
+        """Verify a bearer token. Returns the token row if valid and enabled."""
+        token_hash = self._hash_token(token)
+        stmt = select(DashboardToken).where(
+            DashboardToken.token_hash == token_hash,
+            DashboardToken.enabled.is_(True),
+        )
+        result = await self.session.execute(stmt)
+        dt = result.scalar_one_or_none()
+        if dt is not None:
+            dt.last_used_at = _utcnow()
+            await self.session.flush()
+        return dt
+
+    async def list_dashboard_tokens(self) -> list[DashboardToken]:
+        """List all dashboard tokens."""
+        stmt = select(DashboardToken).order_by(DashboardToken.created_at.desc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def toggle_dashboard_token(
+        self, token_id: int, enabled: bool
+    ) -> DashboardToken | None:
+        """Enable or disable a dashboard token by ID."""
+        stmt = select(DashboardToken).where(DashboardToken.id == token_id)
+        result = await self.session.execute(stmt)
+        dt = result.scalar_one_or_none()
+        if dt is None:
+            return None
+        dt.enabled = enabled
+        await self.session.flush()
+        return dt
+
+    async def delete_dashboard_token(self, token_id: int) -> bool:
+        """Delete a dashboard token by ID."""
+        stmt = select(DashboardToken).where(DashboardToken.id == token_id)
+        result = await self.session.execute(stmt)
+        dt = result.scalar_one_or_none()
+        if dt is None:
+            return False
+        await self.session.delete(dt)
+        await self.session.flush()
+        return True
+
+    # ------------------------------------------------------------------
+    # Monitor Topics
+    # ------------------------------------------------------------------
+
+    async def add_monitor_topic(
+        self,
+        name: str,
+        description: str | None = None,
+    ) -> MonitorTopic:
+        """Create a new monitor topic."""
+        topic = MonitorTopic(name=name, description=description)
+        self.session.add(topic)
+        await self.session.flush()
+        return topic
+
+    async def list_monitor_topics(
+        self, enabled_only: bool = False
+    ) -> list[MonitorTopic]:
+        """List all monitor topics, optionally only enabled ones."""
+        stmt = select(MonitorTopic).order_by(MonitorTopic.created_at.asc())
+        if enabled_only:
+            stmt = stmt.where(MonitorTopic.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_monitor_topic(self, name: str) -> MonitorTopic | None:
+        """Get a monitor topic by name."""
+        stmt = select(MonitorTopic).where(MonitorTopic.name == name)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def delete_monitor_topic(self, name: str) -> bool:
+        """Delete a monitor topic by name. Cascade deletes entities/resources."""
+        topic = await self.get_monitor_topic(name)
+        if topic is None:
+            return False
+        await self.session.delete(topic)
+        await self.session.flush()
+        return True
+
+    # ------------------------------------------------------------------
+    # Monitor Entities
+    # ------------------------------------------------------------------
+
+    async def add_monitor_entity(
+        self,
+        topic_id: int,
+        name: str,
+        url: str | None = None,
+        entity_type: str = "company",
+        description: str | None = None,
+    ) -> MonitorEntity:
+        """Create a new monitor entity."""
+        entity = MonitorEntity(
+            topic_id=topic_id,
+            name=name,
+            url=url,
+            entity_type=entity_type,
+            description=description,
+        )
+        self.session.add(entity)
+        await self.session.flush()
+        return entity
+
+    async def list_monitor_entities(
+        self,
+        topic_id: int | None = None,
+        enabled_only: bool = False,
+    ) -> list[MonitorEntity]:
+        """List monitor entities, optionally filtered by topic and enabled."""
+        stmt = select(MonitorEntity).order_by(MonitorEntity.created_at.asc())
+        if topic_id is not None:
+            stmt = stmt.where(MonitorEntity.topic_id == topic_id)
+        if enabled_only:
+            stmt = stmt.where(MonitorEntity.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_monitor_entity(self, name: str) -> MonitorEntity | None:
+        """Get a monitor entity by name."""
+        stmt = select(MonitorEntity).where(MonitorEntity.name == name)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def delete_monitor_entity(self, name: str) -> bool:
+        """Delete a monitor entity by name. Cascade deletes resources."""
+        entity = await self.get_monitor_entity(name)
+        if entity is None:
+            return False
+        await self.session.delete(entity)
+        await self.session.flush()
+        return True
+
+    # ------------------------------------------------------------------
+    # Monitor Resources
+    # ------------------------------------------------------------------
+
+    async def add_monitor_resource(
+        self,
+        topic_id: int,
+        entity_id: int,
+        name: str,
+        url: str,
+        resource_type: str,
+    ) -> MonitorResource:
+        """Create a new monitor resource."""
+        resource = MonitorResource(
+            topic_id=topic_id,
+            entity_id=entity_id,
+            name=name,
+            url=url,
+            resource_type=resource_type,
+        )
+        self.session.add(resource)
+        await self.session.flush()
+        return resource
+
+    async def list_monitor_resources(
+        self,
+        entity_id: int | None = None,
+        topic_id: int | None = None,
+        enabled_only: bool = False,
+    ) -> list[MonitorResource]:
+        """List monitor resources, optionally filtered."""
+        stmt = select(MonitorResource).order_by(
+            MonitorResource.created_at.asc()
+        )
+        if entity_id is not None:
+            stmt = stmt.where(MonitorResource.entity_id == entity_id)
+        if topic_id is not None:
+            stmt = stmt.where(MonitorResource.topic_id == topic_id)
+        if enabled_only:
+            stmt = stmt.where(MonitorResource.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete_monitor_resource(self, resource_id: int) -> bool:
+        """Delete a monitor resource by ID."""
+        stmt = select(MonitorResource).where(
+            MonitorResource.id == resource_id
+        )
+        result = await self.session.execute(stmt)
+        resource = result.scalar_one_or_none()
+        if resource is None:
+            return False
+        await self.session.delete(resource)
+        await self.session.flush()
+        return True
+
+    async def update_monitor_resource_checked(
+        self,
+        resource_id: int,
+        changed: bool = False,
+    ) -> None:
+        """Update last_checked_at, and last_changed_at if changed."""
+        now = _utcnow()
+        values: dict = {"last_checked_at": now}
+        if changed:
+            values["last_changed_at"] = now
+        stmt = (
+            update(MonitorResource)
+            .where(MonitorResource.id == resource_id)
+            .values(**values)
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+
+    # ------------------------------------------------------------------
+    # Monitor Snapshots
+    # ------------------------------------------------------------------
+
+    async def add_monitor_snapshot(
+        self,
+        topic_id: int,
+        entity_id: int,
+        resource_id: int,
+        content_hash: str,
+        content_markdown: str,
+        has_changes: bool = False,
+    ) -> MonitorSnapshot:
+        """Create a new monitor snapshot."""
+        snap = MonitorSnapshot(
+            topic_id=topic_id,
+            entity_id=entity_id,
+            resource_id=resource_id,
+            content_hash=content_hash,
+            content_markdown=content_markdown,
+            has_changes=has_changes,
+        )
+        self.session.add(snap)
+        await self.session.flush()
+        return snap
+
+    async def get_latest_monitor_snapshot(
+        self, resource_id: int
+    ) -> MonitorSnapshot | None:
+        """Get the most recent snapshot for a resource by fetched_at."""
+        stmt = (
+            select(MonitorSnapshot)
+            .where(MonitorSnapshot.resource_id == resource_id)
+            .order_by(MonitorSnapshot.fetched_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Monitor Digests
+    # ------------------------------------------------------------------
+
+    async def add_monitor_digest(
+        self,
+        topic_id: int,
+        entity_id: int,
+        resource_id: int,
+        snapshot_id: int,
+        summary: str,
+        change_type: str,
+    ) -> MonitorDigest:
+        """Create a new monitor digest."""
+        digest = MonitorDigest(
+            topic_id=topic_id,
+            entity_id=entity_id,
+            resource_id=resource_id,
+            snapshot_id=snapshot_id,
+            summary=summary,
+            change_type=change_type,
+        )
+        self.session.add(digest)
+        await self.session.flush()
+        return digest
+
+    async def list_monitor_digests(
+        self,
+        topic_id: int | None = None,
+        entity_id: int | None = None,
+        resource_id: int | None = None,
+        limit: int = 50,
+    ) -> list[MonitorDigest]:
+        """List monitor digests, most recent first."""
+        stmt = select(MonitorDigest).order_by(
+            MonitorDigest.created_at.desc()
+        )
+        if topic_id is not None:
+            stmt = stmt.where(MonitorDigest.topic_id == topic_id)
+        if entity_id is not None:
+            stmt = stmt.where(MonitorDigest.entity_id == entity_id)
+        if resource_id is not None:
+            stmt = stmt.where(MonitorDigest.resource_id == resource_id)
+        stmt = stmt.limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Monitor Subscribers
+    # ------------------------------------------------------------------
+
+    async def add_monitor_subscriber(
+        self,
+        channel_type: str,
+        channel_config: str,
+        topic_id: int | None = None,
+        entity_id: int | None = None,
+        resource_id: int | None = None,
+    ) -> MonitorSubscriber:
+        """Create a new monitor subscriber."""
+        sub = MonitorSubscriber(
+            channel_type=channel_type,
+            channel_config=channel_config,
+            topic_id=topic_id,
+            entity_id=entity_id,
+            resource_id=resource_id,
+        )
+        self.session.add(sub)
+        await self.session.flush()
+        return sub
+
+    async def list_monitor_subscribers(
+        self,
+        topic_id: int | None = None,
+        entity_id: int | None = None,
+        resource_id: int | None = None,
+    ) -> list[MonitorSubscriber]:
+        """List enabled subscribers. Uses OR for filter conditions."""
+        stmt = select(MonitorSubscriber).where(
+            MonitorSubscriber.enabled.is_(True)
+        )
+        conditions = []
+        if topic_id is not None:
+            conditions.append(MonitorSubscriber.topic_id == topic_id)
+        if entity_id is not None:
+            conditions.append(MonitorSubscriber.entity_id == entity_id)
+        if resource_id is not None:
+            conditions.append(MonitorSubscriber.resource_id == resource_id)
+        if conditions:
+            stmt = stmt.where(sa.or_(*conditions))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete_monitor_subscriber(self, subscriber_id: int) -> bool:
+        """Delete a monitor subscriber by ID."""
+        stmt = select(MonitorSubscriber).where(
+            MonitorSubscriber.id == subscriber_id
+        )
+        result = await self.session.execute(stmt)
+        sub = result.scalar_one_or_none()
+        if sub is None:
+            return False
+        await self.session.delete(sub)
+        await self.session.flush()
+        return True

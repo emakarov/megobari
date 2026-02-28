@@ -448,6 +448,50 @@ async def test_get_recent_messages():
     assert recent[0].content == "msg 9"  # newest first
 
 
+async def test_get_recent_messages_all():
+    """get_recent_messages_all returns messages across sessions, newest first."""
+    async with get_session() as s:
+        repo = Repository(s)
+        # Create messages in different sessions
+        await repo.add_message("session-a", "user", "a-msg-1")
+        await repo.add_message("session-b", "user", "b-msg-1")
+        await repo.add_message("session-a", "assistant", "a-reply-1")
+        await repo.add_message("session-c", "user", "c-msg-1")
+        await repo.add_message("session-b", "assistant", "b-reply-1")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        msgs = await repo.get_recent_messages_all(limit=30)
+    assert len(msgs) == 5
+    # Newest first
+    assert msgs[0].content == "b-reply-1"
+    assert msgs[1].content == "c-msg-1"
+    assert msgs[4].content == "a-msg-1"
+    # Multiple sessions represented
+    session_names = {m.session_name for m in msgs}
+    assert session_names == {"session-a", "session-b", "session-c"}
+
+
+async def test_get_recent_messages_all_respects_limit():
+    async with get_session() as s:
+        repo = Repository(s)
+        for i in range(10):
+            await repo.add_message("sess", "user", f"msg-{i}")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        msgs = await repo.get_recent_messages_all(limit=3)
+    assert len(msgs) == 3
+    assert msgs[0].content == "msg-9"
+
+
+async def test_get_recent_messages_all_empty():
+    async with get_session() as s:
+        repo = Repository(s)
+        msgs = await repo.get_recent_messages_all()
+    assert msgs == []
+
+
 async def test_message_repr():
     async with get_session() as s:
         repo = Repository(s)
@@ -909,3 +953,847 @@ async def test_heartbeat_check_repr_disabled():
         await s.flush()
     r = repr(check)
     assert "disabled" in r
+
+
+# ---------------------------------------------------------------
+# Dashboard Tokens
+# ---------------------------------------------------------------
+
+
+async def test_create_dashboard_token():
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("my-app", "tok_abcdef1234567890")
+    assert dt.id is not None
+    assert dt.name == "my-app"
+    assert dt.token_prefix == "tok_abcd"
+    assert dt.enabled is True
+    assert dt.last_used_at is None
+    # Token should be hashed, not stored raw
+    assert dt.token_hash != "tok_abcdef1234567890"
+    assert len(dt.token_hash) == 64  # sha256 hex digest
+
+
+async def test_verify_dashboard_token_valid():
+    token = "secret_token_for_testing"
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.create_dashboard_token("app", token)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.verify_dashboard_token(token)
+    assert dt is not None
+    assert dt.name == "app"
+    assert dt.last_used_at is not None  # should be updated on verify
+
+
+async def test_verify_dashboard_token_disabled():
+    token = "secret_token_disabled"
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("app", token)
+        dt.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        result = await repo.verify_dashboard_token(token)
+    assert result is None
+
+
+async def test_verify_dashboard_token_invalid():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.create_dashboard_token("app", "real_token")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        result = await repo.verify_dashboard_token("wrong_token")
+    assert result is None
+
+
+async def test_list_dashboard_tokens():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.create_dashboard_token("first", "token_one")
+        await repo.create_dashboard_token("second", "token_two")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        tokens = await repo.list_dashboard_tokens()
+    assert len(tokens) == 2
+    # Ordered by created_at desc, so "second" comes first
+    assert tokens[0].name == "second"
+    assert tokens[1].name == "first"
+
+
+async def test_list_dashboard_tokens_empty():
+    async with get_session() as s:
+        repo = Repository(s)
+        tokens = await repo.list_dashboard_tokens()
+    assert tokens == []
+
+
+async def test_toggle_dashboard_token():
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("app", "some_token")
+        token_id = dt.id
+
+    # Disable
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.toggle_dashboard_token(token_id, enabled=False)
+    assert dt is not None
+    assert dt.enabled is False
+
+    # Re-enable
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.toggle_dashboard_token(token_id, enabled=True)
+    assert dt is not None
+    assert dt.enabled is True
+
+
+async def test_toggle_dashboard_token_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        result = await repo.toggle_dashboard_token(9999, enabled=False)
+    assert result is None
+
+
+async def test_delete_dashboard_token():
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("temp", "temp_token")
+        token_id = dt.id
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_dashboard_token(token_id)
+    assert deleted is True
+
+    # Verify it's gone
+    async with get_session() as s:
+        repo = Repository(s)
+        tokens = await repo.list_dashboard_tokens()
+    assert len(tokens) == 0
+
+
+async def test_delete_dashboard_token_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_dashboard_token(9999)
+    assert deleted is False
+
+
+async def test_dashboard_token_repr():
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("my-app", "tok_12345678rest")
+    r = repr(dt)
+    assert "my-app" in r
+    assert "tok_1234" in r
+    assert "enabled" in r
+
+
+async def test_dashboard_token_repr_disabled():
+    async with get_session() as s:
+        repo = Repository(s)
+        dt = await repo.create_dashboard_token("my-app", "tok_12345678rest")
+        dt.enabled = False
+        await s.flush()
+    r = repr(dt)
+    assert "disabled" in r
+
+
+# ---------------------------------------------------------------
+# Monitor Topics
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.add_monitor_topic("Logistics SaaS", description="Competitor watch")
+    assert topic.id is not None
+    assert topic.name == "Logistics SaaS"
+    assert topic.description == "Competitor watch"
+    assert topic.enabled is True
+
+
+async def test_add_monitor_topic_no_description():
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.add_monitor_topic("Minimal")
+    assert topic.description is None
+
+
+async def test_list_monitor_topics():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_monitor_topic("Alpha")
+        await repo.add_monitor_topic("Bravo")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        topics = await repo.list_monitor_topics()
+    assert len(topics) == 2
+
+
+async def test_list_monitor_topics_enabled_only():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_monitor_topic("Active")
+        t2 = await repo.add_monitor_topic("Disabled")
+        t2.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        topics = await repo.list_monitor_topics(enabled_only=True)
+    assert len(topics) == 1
+    assert topics[0].name == "Active"
+
+
+async def test_get_monitor_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_monitor_topic("Target")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.get_monitor_topic("Target")
+    assert topic is not None
+    assert topic.name == "Target"
+
+
+async def test_get_monitor_topic_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.get_monitor_topic("nope")
+    assert topic is None
+
+
+async def test_delete_monitor_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_monitor_topic("ToDelete")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_topic("ToDelete")
+    assert deleted is True
+
+    async with get_session() as s:
+        repo = Repository(s)
+        assert await repo.get_monitor_topic("ToDelete") is None
+
+
+async def test_delete_monitor_topic_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_topic("nope")
+    assert deleted is False
+
+
+async def test_delete_monitor_topic_cascades_entities():
+    """Deleting a topic should cascade-delete its entities and resources."""
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.add_monitor_topic("CascadeTopic")
+        entity = await repo.add_monitor_entity(topic.id, "SomeCompany")
+        await repo.add_monitor_resource(
+            topic.id, entity.id, "Blog", "https://example.com/blog", "blog"
+        )
+
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.delete_monitor_topic("CascadeTopic")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        entities = await repo.list_monitor_entities()
+    assert len(entities) == 0
+
+
+# ---------------------------------------------------------------
+# Monitor Entities
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_entity():
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.add_monitor_topic("Tech")
+        entity = await repo.add_monitor_entity(
+            topic.id, "Acme Corp", url="https://acme.com",
+            entity_type="company", description="A competitor",
+        )
+    assert entity.id is not None
+    assert entity.name == "Acme Corp"
+    assert entity.entity_type == "company"
+    assert entity.enabled is True
+
+
+async def test_add_monitor_entity_defaults():
+    async with get_session() as s:
+        repo = Repository(s)
+        topic = await repo.add_monitor_topic("Tech")
+        entity = await repo.add_monitor_entity(topic.id, "BasicCo")
+    assert entity.entity_type == "company"
+    assert entity.url is None
+    assert entity.description is None
+
+
+async def test_list_monitor_entities():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_entity(t.id, "Alpha")
+        await repo.add_monitor_entity(t.id, "Bravo")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        entities = await repo.list_monitor_entities()
+    assert len(entities) == 2
+
+
+async def test_list_monitor_entities_by_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        t1 = await repo.add_monitor_topic("Tech")
+        t2 = await repo.add_monitor_topic("Finance")
+        await repo.add_monitor_entity(t1.id, "TechCo")
+        await repo.add_monitor_entity(t2.id, "FinCo")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        entities = await repo.list_monitor_entities(topic_id=t1.id)
+    assert len(entities) == 1
+    assert entities[0].name == "TechCo"
+
+
+async def test_list_monitor_entities_enabled_only():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_entity(t.id, "Active")
+        e2 = await repo.add_monitor_entity(t.id, "Disabled")
+        e2.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        entities = await repo.list_monitor_entities(enabled_only=True)
+    assert len(entities) == 1
+    assert entities[0].name == "Active"
+
+
+async def test_get_monitor_entity():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_entity(t.id, "Target")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        entity = await repo.get_monitor_entity("Target")
+    assert entity is not None
+    assert entity.name == "Target"
+
+
+async def test_get_monitor_entity_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        entity = await repo.get_monitor_entity("nope")
+    assert entity is None
+
+
+async def test_delete_monitor_entity():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_entity(t.id, "ToDelete")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_entity("ToDelete")
+    assert deleted is True
+
+    async with get_session() as s:
+        repo = Repository(s)
+        assert await repo.get_monitor_entity("ToDelete") is None
+
+
+async def test_delete_monitor_entity_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_entity("nope")
+    assert deleted is False
+
+
+async def test_delete_monitor_entity_cascades_resources():
+    """Deleting an entity should cascade-delete its resources."""
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "CascadeEntity")
+        await repo.add_monitor_resource(
+            t.id, e.id, "Blog", "https://example.com/blog", "blog"
+        )
+
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.delete_monitor_entity("CascadeEntity")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources()
+    assert len(resources) == 0
+
+
+# ---------------------------------------------------------------
+# Monitor Resources
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_resource():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(
+            t.id, e.id, "Pricing Page", "https://acme.com/pricing", "pricing"
+        )
+    assert r.id is not None
+    assert r.name == "Pricing Page"
+    assert r.resource_type == "pricing"
+    assert r.enabled is True
+    assert r.last_checked_at is None
+    assert r.last_changed_at is None
+
+
+async def test_list_monitor_resources():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        await repo.add_monitor_resource(t.id, e.id, "Blog", "https://acme.com/blog", "blog")
+        await repo.add_monitor_resource(t.id, e.id, "Docs", "https://acme.com/docs", "docs")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources()
+    assert len(resources) == 2
+
+
+async def test_list_monitor_resources_by_entity():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e1 = await repo.add_monitor_entity(t.id, "Acme")
+        e2 = await repo.add_monitor_entity(t.id, "Beta")
+        await repo.add_monitor_resource(t.id, e1.id, "Blog", "https://acme.com", "blog")
+        await repo.add_monitor_resource(t.id, e2.id, "Docs", "https://beta.com", "docs")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources(entity_id=e1.id)
+    assert len(resources) == 1
+    assert resources[0].name == "Blog"
+
+
+async def test_list_monitor_resources_by_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        t1 = await repo.add_monitor_topic("Tech")
+        t2 = await repo.add_monitor_topic("Finance")
+        e1 = await repo.add_monitor_entity(t1.id, "TechCo")
+        e2 = await repo.add_monitor_entity(t2.id, "FinCo")
+        await repo.add_monitor_resource(t1.id, e1.id, "R1", "https://a.com", "blog")
+        await repo.add_monitor_resource(t2.id, e2.id, "R2", "https://b.com", "blog")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources(topic_id=t1.id)
+    assert len(resources) == 1
+    assert resources[0].name == "R1"
+
+
+async def test_list_monitor_resources_enabled_only():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        await repo.add_monitor_resource(t.id, e.id, "Active", "https://a.com", "blog")
+        r2 = await repo.add_monitor_resource(t.id, e.id, "Off", "https://b.com", "blog")
+        r2.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources(enabled_only=True)
+    assert len(resources) == 1
+    assert resources[0].name == "Active"
+
+
+async def test_delete_monitor_resource():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        rid = r.id
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_resource(rid)
+    assert deleted is True
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources()
+    assert len(resources) == 0
+
+
+async def test_delete_monitor_resource_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_resource(9999)
+    assert deleted is False
+
+
+async def test_update_monitor_resource_checked():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        rid = r.id
+
+    # Check without changes
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.update_monitor_resource_checked(rid, changed=False)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources()
+        r = resources[0]
+    assert r.last_checked_at is not None
+    assert r.last_changed_at is None
+
+
+async def test_update_monitor_resource_checked_with_change():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        rid = r.id
+
+    # Check with changes
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.update_monitor_resource_checked(rid, changed=True)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        resources = await repo.list_monitor_resources()
+        r = resources[0]
+    assert r.last_checked_at is not None
+    assert r.last_changed_at is not None
+
+
+# ---------------------------------------------------------------
+# Monitor Snapshots
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_snapshot():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        snap = await repo.add_monitor_snapshot(
+            t.id, e.id, r.id, "abc123hash", "# Hello World", has_changes=True,
+        )
+    assert snap.id is not None
+    assert snap.content_hash == "abc123hash"
+    assert snap.content_markdown == "# Hello World"
+    assert snap.has_changes is True
+
+
+async def test_add_monitor_snapshot_no_changes():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        snap = await repo.add_monitor_snapshot(
+            t.id, e.id, r.id, "abc123hash", "# Hello World",
+        )
+    assert snap.has_changes is False
+
+
+async def test_get_latest_monitor_snapshot():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        await repo.add_monitor_snapshot(t.id, e.id, r.id, "hash1", "First")
+        await repo.add_monitor_snapshot(t.id, e.id, r.id, "hash2", "Second")
+        rid = r.id
+
+    async with get_session() as s:
+        repo = Repository(s)
+        snap = await repo.get_latest_monitor_snapshot(rid)
+    assert snap is not None
+    assert snap.content_hash == "hash2"
+    assert snap.content_markdown == "Second"
+
+
+async def test_get_latest_monitor_snapshot_none():
+    async with get_session() as s:
+        repo = Repository(s)
+        snap = await repo.get_latest_monitor_snapshot(9999)
+    assert snap is None
+
+
+# ---------------------------------------------------------------
+# Monitor Digests
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_digest():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        snap = await repo.add_monitor_snapshot(t.id, e.id, r.id, "h", "content")
+        digest = await repo.add_monitor_digest(
+            t.id, e.id, r.id, snap.id, "Pricing changed by 20%", "pricing_change",
+        )
+    assert digest.id is not None
+    assert digest.summary == "Pricing changed by 20%"
+    assert digest.change_type == "pricing_change"
+
+
+async def test_list_monitor_digests():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        snap = await repo.add_monitor_snapshot(t.id, e.id, r.id, "h", "content")
+        await repo.add_monitor_digest(t.id, e.id, r.id, snap.id, "First", "update")
+        await repo.add_monitor_digest(t.id, e.id, r.id, snap.id, "Second", "update")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        digests = await repo.list_monitor_digests()
+    assert len(digests) == 2
+    # Most recent first
+    assert digests[0].summary == "Second"
+    assert digests[1].summary == "First"
+
+
+async def test_list_monitor_digests_by_topic():
+    async with get_session() as s:
+        repo = Repository(s)
+        t1 = await repo.add_monitor_topic("Tech")
+        t2 = await repo.add_monitor_topic("Finance")
+        e1 = await repo.add_monitor_entity(t1.id, "TechCo")
+        e2 = await repo.add_monitor_entity(t2.id, "FinCo")
+        r1 = await repo.add_monitor_resource(t1.id, e1.id, "R1", "https://a.com", "blog")
+        r2 = await repo.add_monitor_resource(t2.id, e2.id, "R2", "https://b.com", "blog")
+        s1 = await repo.add_monitor_snapshot(t1.id, e1.id, r1.id, "h1", "c1")
+        s2 = await repo.add_monitor_snapshot(t2.id, e2.id, r2.id, "h2", "c2")
+        await repo.add_monitor_digest(t1.id, e1.id, r1.id, s1.id, "Tech digest", "update")
+        await repo.add_monitor_digest(t2.id, e2.id, r2.id, s2.id, "Fin digest", "update")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        digests = await repo.list_monitor_digests(topic_id=t1.id)
+    assert len(digests) == 1
+    assert digests[0].summary == "Tech digest"
+
+
+async def test_list_monitor_digests_by_entity():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e1 = await repo.add_monitor_entity(t.id, "Acme")
+        e2 = await repo.add_monitor_entity(t.id, "Beta")
+        r1 = await repo.add_monitor_resource(t.id, e1.id, "R1", "https://a.com", "blog")
+        r2 = await repo.add_monitor_resource(t.id, e2.id, "R2", "https://b.com", "blog")
+        s1 = await repo.add_monitor_snapshot(t.id, e1.id, r1.id, "h", "c")
+        s2 = await repo.add_monitor_snapshot(t.id, e2.id, r2.id, "h", "c")
+        await repo.add_monitor_digest(t.id, e1.id, r1.id, s1.id, "Acme change", "update")
+        await repo.add_monitor_digest(t.id, e2.id, r2.id, s2.id, "Beta change", "update")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        digests = await repo.list_monitor_digests(entity_id=e1.id)
+    assert len(digests) == 1
+    assert digests[0].summary == "Acme change"
+
+
+async def test_list_monitor_digests_limit():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        snap = await repo.add_monitor_snapshot(t.id, e.id, r.id, "h", "c")
+        for i in range(5):
+            await repo.add_monitor_digest(t.id, e.id, r.id, snap.id, f"D{i}", "update")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        digests = await repo.list_monitor_digests(limit=3)
+    assert len(digests) == 3
+
+
+# ---------------------------------------------------------------
+# Monitor Subscribers
+# ---------------------------------------------------------------
+
+
+async def test_add_monitor_subscriber():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        sub = await repo.add_monitor_subscriber(
+            "telegram", '{"chat_id": 123}', topic_id=t.id,
+        )
+    assert sub.id is not None
+    assert sub.channel_type == "telegram"
+    assert sub.channel_config == '{"chat_id": 123}'
+    assert sub.topic_id == t.id
+    assert sub.entity_id is None
+    assert sub.resource_id is None
+    assert sub.enabled is True
+
+
+async def test_add_monitor_subscriber_entity_level():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        sub = await repo.add_monitor_subscriber(
+            "telegram", '{"chat_id": 456}', entity_id=e.id,
+        )
+    assert sub.entity_id == e.id
+    assert sub.topic_id is None
+
+
+async def test_add_monitor_subscriber_resource_level():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        sub = await repo.add_monitor_subscriber(
+            "telegram", '{"chat_id": 789}', resource_id=r.id,
+        )
+    assert sub.resource_id == r.id
+
+
+async def test_list_monitor_subscribers_by_topic():
+    """list_monitor_subscribers should use OR for filter conditions."""
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        # Sub at topic level
+        await repo.add_monitor_subscriber("telegram", '{"c": 1}', topic_id=t.id)
+        # Sub at entity level
+        await repo.add_monitor_subscriber("telegram", '{"c": 2}', entity_id=e.id)
+        # Sub at resource level
+        await repo.add_monitor_subscriber("telegram", '{"c": 3}', resource_id=r.id)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        # Query with topic_id — should match the topic-level subscriber
+        subs = await repo.list_monitor_subscribers(topic_id=t.id)
+    assert len(subs) == 1
+    assert subs[0].channel_config == '{"c": 1}'
+
+
+async def test_list_monitor_subscribers_or_filter():
+    """When passing multiple filter params, use OR."""
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        e = await repo.add_monitor_entity(t.id, "Acme")
+        r = await repo.add_monitor_resource(t.id, e.id, "Blog", "https://a.com", "blog")
+        await repo.add_monitor_subscriber("telegram", '{"c": 1}', topic_id=t.id)
+        await repo.add_monitor_subscriber("telegram", '{"c": 2}', entity_id=e.id)
+        await repo.add_monitor_subscriber("telegram", '{"c": 3}', resource_id=r.id)
+
+    async with get_session() as s:
+        repo = Repository(s)
+        # Query with topic_id AND entity_id — should return both via OR
+        subs = await repo.list_monitor_subscribers(topic_id=t.id, entity_id=e.id)
+    assert len(subs) == 2
+
+
+async def test_list_monitor_subscribers_only_enabled():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_subscriber("telegram", '{"c": 1}', topic_id=t.id)
+        s2 = await repo.add_monitor_subscriber("telegram", '{"c": 2}', topic_id=t.id)
+        s2.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        subs = await repo.list_monitor_subscribers(topic_id=t.id)
+    assert len(subs) == 1
+
+
+async def test_list_monitor_subscribers_no_filter():
+    """Without filters, return all enabled subscribers."""
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        await repo.add_monitor_subscriber("telegram", '{"c": 1}', topic_id=t.id)
+        await repo.add_monitor_subscriber("email", '{"e": "x@x.com"}')
+
+    async with get_session() as s:
+        repo = Repository(s)
+        subs = await repo.list_monitor_subscribers()
+    assert len(subs) == 2
+
+
+async def test_delete_monitor_subscriber():
+    async with get_session() as s:
+        repo = Repository(s)
+        t = await repo.add_monitor_topic("Tech")
+        sub = await repo.add_monitor_subscriber("telegram", '{"c": 1}', topic_id=t.id)
+        sid = sub.id
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_subscriber(sid)
+    assert deleted is True
+
+    async with get_session() as s:
+        repo = Repository(s)
+        subs = await repo.list_monitor_subscribers()
+    assert len(subs) == 0
+
+
+async def test_delete_monitor_subscriber_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_monitor_subscriber(9999)
+    assert deleted is False
