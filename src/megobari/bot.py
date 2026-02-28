@@ -30,6 +30,7 @@ from megobari.message_utils import (
     format_session_info,
     format_session_list,
     format_tool_summary,
+    sanitize_html,
     split_message,
     tool_status_text,
 )
@@ -1889,7 +1890,7 @@ class StreamingAccumulator:
     async def _do_edit(self) -> None:
         display = self.accumulated[:4096]
         try:
-            rendered = markdown_to_html(display)
+            rendered = sanitize_html(markdown_to_html(display))
             await self.message.edit_text(rendered, parse_mode="HTML")
             self.last_edit_len = len(self.accumulated)
         except Exception:
@@ -2104,15 +2105,14 @@ async def _process_prompt(
 
             if tool_uses:
                 summary = format_tool_summary(tool_uses, fmt)
-                rendered = markdown_to_html(response_text)
+                rendered = sanitize_html(markdown_to_html(response_text))
                 combined = f"{summary}\n\n{rendered}"
                 for chunk in split_message(combined):
                     await _reply(update, chunk, formatted=True)
             else:
-                for chunk in split_message(response_text):
-                    await _reply(
-                        update, markdown_to_html(chunk), formatted=True,
-                    )
+                rendered = sanitize_html(markdown_to_html(response_text))
+                for chunk in split_message(rendered):
+                    await _reply(update, chunk, formatted=True)
 
         # Update session
         if new_session_id:

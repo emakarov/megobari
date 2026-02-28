@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from pathlib import PurePosixPath
 
@@ -9,20 +10,53 @@ from megobari.config import TELEGRAM_MAX_MESSAGE_LEN
 from megobari.formatting import Formatter, PlainTextFormatter
 from megobari.session import Session
 
+# Matches HTML open/close tags (e.g. <code>, </pre>, <a href="...">)
+_TAG_RE = re.compile(r"<(/?)(\w[\w-]*)(?:\s[^>]*)?>")
+
+
+def sanitize_html(text: str) -> str:
+    """Close any unclosed HTML tags at the end of the string.
+
+    Telegram's Bot API rejects messages with unbalanced tags.  This function
+    appends closing tags for any that remain open, making the fragment valid.
+    """
+    stack: list[str] = []
+    for m in _TAG_RE.finditer(text):
+        is_close = m.group(1) == "/"
+        tag_name = m.group(2).lower()
+        if is_close:
+            # Pop the nearest matching open tag (tolerant of mismatches)
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i] == tag_name:
+                    stack.pop(i)
+                    break
+        else:
+            stack.append(tag_name)
+
+    if stack:
+        text += "".join(f"</{tag}>" for tag in reversed(stack))
+    return text
+
 
 def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LEN) -> list[str]:
-    """Split a message into chunks that fit within max_length."""
+    """Split a message into chunks that fit within max_length.
+
+    HTML tags that span across a split boundary are automatically closed at
+    the end of the chunk and reopened at the start of the next one, so every
+    chunk is valid Telegram HTML.
+    """
     if not text:
         return ["(empty response)"]
     if len(text) <= max_length:
         return [text]
 
-    chunks: list[str] = []
+    # --- Phase 1: raw split (tag-unaware) ---
+    raw_chunks: list[str] = []
     remaining = text
 
     while remaining:
         if len(remaining) <= max_length:
-            chunks.append(remaining)
+            raw_chunks.append(remaining)
             break
 
         chunk = remaining[:max_length]
@@ -39,10 +73,49 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LEN) -> list
             # Hard cut
             split_pos = max_length
 
-        chunks.append(remaining[:split_pos])
+        raw_chunks.append(remaining[:split_pos])
         remaining = remaining[split_pos:].lstrip("\n")
 
-    return chunks
+    # --- Phase 2: balance HTML tags across chunks ---
+    return _balance_html_tags(raw_chunks)
+
+
+def _balance_html_tags(chunks: list[str]) -> list[str]:
+    """Ensure every chunk has properly closed/opened HTML tags.
+
+    For each chunk, unclosed tags are closed at the end and reopened at the
+    start of the next chunk.
+    """
+    result: list[str] = []
+    reopen: list[str] = []  # tag names to reopen in the next chunk
+
+    for chunk in chunks:
+        # Reopen tags that were open at the end of the previous chunk
+        if reopen:
+            prefix = "".join(f"<{tag}>" for tag in reopen)
+            chunk = prefix + chunk
+
+        # Walk all tags to find which remain unclosed
+        stack: list[str] = []
+        for m in _TAG_RE.finditer(chunk):
+            is_close = m.group(1) == "/"
+            tag_name = m.group(2).lower()
+            if is_close:
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i] == tag_name:
+                        stack.pop(i)
+                        break
+            else:
+                stack.append(tag_name)
+
+        # Save for next chunk, then close at end of this one
+        reopen = list(stack)
+        if stack:
+            chunk += "".join(f"</{tag}>" for tag in reversed(stack))
+
+        result.append(chunk)
+
+    return result
 
 
 def format_session_info(

@@ -8,6 +8,7 @@ from megobari.message_utils import (
     format_session_info,
     format_session_list,
     format_tool_summary,
+    sanitize_html,
     split_message,
     tool_status_text,
 )
@@ -51,6 +52,83 @@ class TestSplitMessage:
         chunks = split_message(text, max_length=50)
         assert len(chunks) == 2
         assert chunks[0] == "a" * 40
+
+    def test_closes_unclosed_code_tag(self):
+        """Split in the middle of <code>...</code> closes and reopens it."""
+        text = "aaa <code>long code span" + " x" * 50 + "</code> end"
+        chunks = split_message(text, max_length=60)
+        assert len(chunks) >= 2
+        # First chunk must have a closing </code>
+        assert "</code>" in chunks[0]
+        # Second chunk must reopen with <code>
+        assert "<code>" in chunks[1]
+
+    def test_closes_unclosed_pre_tag(self):
+        text = "<pre>" + "x" * 100 + "</pre>"
+        chunks = split_message(text, max_length=50)
+        assert len(chunks) >= 2
+        assert chunks[0].endswith("</pre>")
+        assert chunks[1].startswith("<pre>")
+
+    def test_nested_tags_balanced(self):
+        text = "<b>bold <code>code" + " y" * 40 + "</code></b>"
+        chunks = split_message(text, max_length=50)
+        assert len(chunks) >= 2
+        # First chunk: both <code> and <b> should be closed
+        assert "</code>" in chunks[0]
+        assert "</b>" in chunks[0]
+        # Second chunk: both reopened
+        assert "<b>" in chunks[1]
+        assert "<code>" in chunks[1]
+
+    def test_no_tag_mangling_when_fits(self):
+        """If message fits, no tag balancing needed."""
+        text = "<code>hello</code>"
+        chunks = split_message(text, max_length=4096)
+        assert chunks == ["<code>hello</code>"]
+
+    def test_already_balanced_split(self):
+        """Tags that are already balanced within each chunk stay unchanged."""
+        text = "<b>part1</b>\n\n<b>part2</b>"
+        chunks = split_message(text, max_length=20)
+        assert len(chunks) == 2
+        assert chunks[0] == "<b>part1</b>"
+        assert chunks[1] == "<b>part2</b>"
+
+
+class TestSanitizeHtml:
+    def test_balanced_unchanged(self):
+        text = "<code>hello</code>"
+        assert sanitize_html(text) == text
+
+    def test_closes_unclosed_code(self):
+        text = "<code>hello"
+        assert sanitize_html(text) == "<code>hello</code>"
+
+    def test_closes_nested(self):
+        text = "<b>bold <code>code"
+        assert sanitize_html(text) == "<b>bold <code>code</code></b>"
+
+    def test_no_tags_unchanged(self):
+        text = "plain text"
+        assert sanitize_html(text) == text
+
+    def test_handles_pre_with_code(self):
+        text = '<pre><code class="language-python">x = 1'
+        result = sanitize_html(text)
+        assert result.endswith("</code></pre>")
+
+    def test_already_closed_noop(self):
+        text = "<b>bold</b> <i>italic</i>"
+        assert sanitize_html(text) == text
+
+    def test_empty_string(self):
+        assert sanitize_html("") == ""
+
+    def test_close_tag_without_open(self):
+        """Extra close tags don't add phantom opens."""
+        text = "text</code>"
+        assert sanitize_html(text) == "text</code>"
 
 
 class TestFormatSessionInfo:
