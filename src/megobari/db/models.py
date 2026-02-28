@@ -210,6 +210,29 @@ class HeartbeatCheck(Base):
         return f"<HeartbeatCheck name={self.name!r} [{state}]>"
 
 
+class DashboardToken(Base):
+    """Bearer token for dashboard API access."""
+
+    __tablename__ = "dashboard_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    token_prefix: Mapped[str] = mapped_column(String(8), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of DashboardToken."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<DashboardToken name={self.name!r} prefix={self.token_prefix!r} [{state}]>"
+
+
 class Memory(Base):
     """Long-term factual memory — things learned about the user or context."""
 
@@ -243,3 +266,184 @@ class Memory(Base):
     def __repr__(self) -> str:
         """Return developer-friendly representation of Memory."""
         return f"<Memory category={self.category!r} key={self.key!r}>"
+
+
+class MonitorTopic(Base):
+    """Group of monitored entities (e.g. 'Logistics SaaS')."""
+
+    __tablename__ = "monitor_topics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    # relationships
+    entities: Mapped[list[MonitorEntity]] = relationship(
+        back_populates="topic", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorTopic."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<MonitorTopic name={self.name!r} [{state}]>"
+
+
+class MonitorEntity(Base):
+    """A company, person, or organization being monitored."""
+
+    __tablename__ = "monitor_entities"
+
+    __table_args__ = (
+        UniqueConstraint("topic_id", "name", name="uq_topic_entity_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_topics.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    entity_type: Mapped[str] = mapped_column(String(50), default="company")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    # relationships
+    topic: Mapped[MonitorTopic] = relationship(back_populates="entities")
+    resources: Mapped[list[MonitorResource]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorEntity."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<MonitorEntity name={self.name!r} type={self.entity_type!r} [{state}]>"
+
+
+class MonitorResource(Base):
+    """A specific URL to monitor (blog, repo, pricing page, etc)."""
+
+    __tablename__ = "monitor_resources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_topics.id"), nullable=False
+    )
+    entity_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_entities.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    # relationships
+    entity: Mapped[MonitorEntity] = relationship(back_populates="resources")
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorResource."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<MonitorResource name={self.name!r} type={self.resource_type!r} [{state}]>"
+
+
+class MonitorSnapshot(Base):
+    """A single fetch result for a resource."""
+
+    __tablename__ = "monitor_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_topics.id"), nullable=False
+    )
+    entity_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_entities.id"), nullable=False
+    )
+    resource_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_resources.id"), nullable=False
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    has_changes: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorSnapshot."""
+        changed = "changed" if self.has_changes else "unchanged"
+        return f"<MonitorSnapshot resource_id={self.resource_id} [{changed}]>"
+
+
+class MonitorDigest(Base):
+    """AI-generated summary of changes."""
+
+    __tablename__ = "monitor_digests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_topics.id"), nullable=False
+    )
+    entity_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_entities.id"), nullable=False
+    )
+    resource_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_resources.id"), nullable=False
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_snapshots.id"), nullable=False
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    change_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorDigest."""
+        return (
+            f"<MonitorDigest snapshot_id={self.snapshot_id} "
+            f"type={self.change_type!r}>"
+        )
+
+
+class MonitorSubscriber(Base):
+    """Subscriber for push notifications."""
+
+    __tablename__ = "monitor_subscribers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("monitor_topics.id"), nullable=True
+    )
+    entity_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("monitor_entities.id"), nullable=True
+    )
+    resource_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("monitor_resources.id"), nullable=True
+    )
+    channel_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel_config: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of MonitorSubscriber."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<MonitorSubscriber channel={self.channel_type!r} [{state}]>"
