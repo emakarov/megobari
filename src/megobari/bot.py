@@ -2166,7 +2166,12 @@ async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 def create_application(session_manager: SessionManager, config: Config) -> Application:
     """Create and configure the Telegram application with command handlers."""
-    app = Application.builder().token(config.bot_token).build()
+    app = (
+        Application.builder()
+        .token(config.bot_token)
+        .concurrent_updates(True)
+        .build()
+    )
     app.bot_data["session_manager"] = session_manager
     app.bot_data["config"] = config
 
