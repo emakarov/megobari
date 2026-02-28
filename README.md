@@ -19,6 +19,10 @@ A personal Telegram bot that bridges to [Claude Code](https://docs.anthropic.com
 - **Conversation summaries** — automatic periodic summarization + manual `/compact` with short extract for efficient context injection
 - **Usage tracking** — per-query cost, tokens, duration tracked in SQLite with `/usage` and `/context` commands
 - **Model & reasoning controls** — `/model`, `/think`, `/effort` to tune Claude's behavior per session
+- **Autonomous mode** — `/autonomous` to unlock full agent autonomy with configurable turn limits and budgets
+- **Per-session concurrency** — work on multiple sessions in parallel, no blocking
+- **Cron scheduler** — schedule recurring prompts with standard cron expressions via `/cron`
+- **Heartbeat daemon** — periodic background checks with `HEARTBEAT.md` checklist via `/heartbeat`
 - **Plugin marketplace** — curated collection of Claude Code skills and MCP integrations
 
 ## Installation
@@ -157,6 +161,21 @@ Both modes write a PID file to `.megobari/bot.pid` for lifecycle management. Use
 | `/usage` | Show cost and usage statistics |
 | `/history [all\|search\|stats]` | Browse conversation history |
 
+**Autonomy & scheduling**
+
+| Command | Description |
+|---|---|
+| `/autonomous [on\|off]` | Toggle autonomous mode (bypasses permissions, max effort, 50 turns) |
+| `/autonomous turns <n>` | Set max turns for autonomous mode |
+| `/autonomous budget <usd>` | Set max budget for autonomous mode |
+| `/cron add <name> <expr> <prompt>` | Add a scheduled cron job |
+| `/cron remove <name>` | Remove a cron job |
+| `/cron pause\|resume <name>` | Pause or resume a cron job |
+| `/cron list` | List all cron jobs |
+| `/heartbeat [on\|off]` | Toggle heartbeat daemon |
+| `/heartbeat now` | Run heartbeat check immediately |
+| `/heartbeat status` | Show heartbeat daemon status |
+
 **Utilities**
 
 | Command | Description |
@@ -190,8 +209,56 @@ Each session maintains its own:
 - Extra accessible directories
 - Streaming toggle
 - Permission mode
+- Model override
+- Thinking mode and budget
+- Effort level
+- Max turns and budget (autonomous mode)
 
 Session data is persisted to `.megobari/sessions/sessions.json`.
+
+Sessions are fully concurrent — you can send messages to different sessions in parallel without blocking.
+
+### Autonomous mode
+
+Enable full agent autonomy for complex multi-step tasks:
+
+```
+/autonomous on
+```
+
+This sets `bypassPermissions` + max effort + 50 max turns. Claude can work through long tasks without prompting. Customize limits:
+
+```
+/autonomous turns 100    # allow up to 100 agent turns
+/autonomous budget 5.00  # cap spending at $5
+```
+
+### Cron scheduler
+
+Schedule recurring tasks that run automatically:
+
+```
+/cron add daily-report "0 9 * * *" Summarize what happened in the codebase yesterday
+/cron add health-check "*/30 * * * *" Check if the API is responding
+/cron list
+/cron pause daily-report
+/cron remove health-check
+```
+
+Jobs are stored in SQLite and survive restarts. Each job runs in its own session context and sends results to Telegram.
+
+### Heartbeat daemon
+
+A background daemon that periodically checks a `HEARTBEAT.md` checklist in your working directory:
+
+```
+/heartbeat on     # start daemon (checks every 30 minutes)
+/heartbeat off    # stop daemon
+/heartbeat now    # run check immediately
+/heartbeat status # show daemon status
+```
+
+If the checklist has items needing attention, Claude notifies you. Silent `HEARTBEAT_OK` responses are suppressed. Create a custom `HEARTBEAT.md` in your working directory to define what gets checked.
 
 ## Voice Messages
 
@@ -236,6 +303,7 @@ Megobari uses SQLite (at `~/.megobari/megobari.db`) to persist:
 - **Messages** — logged for summarization pipeline
 - **Memories** — long-term facts and preferences that Claude can save/recall across sessions via action blocks
 - **Usage records** — per-query cost, token counts, duration
+- **Cron jobs** — scheduled task definitions with cron expressions, last-run tracking
 
 The recall system injects recent summaries (short extracts) and memories into the system prompt, giving Claude persistent context across conversation resets.
 
@@ -307,8 +375,9 @@ src/megobari/
   recall.py                # Context recall (summaries + memories → system prompt)
   summarizer.py            # Auto-summarization pipeline
   voice.py                 # Voice transcription (optional dep)
+  scheduler.py             # Cron scheduler + heartbeat daemon
   db/
-    models.py              # SQLAlchemy models (User, Message, Summary, Memory, Usage)
+    models.py              # SQLAlchemy models (User, Message, Summary, Memory, Usage, CronJob)
     repository.py          # Async CRUD operations
     engine.py              # DB engine factory
 tests/
@@ -324,10 +393,14 @@ Telegram  <-->  bot.py  <-->  claude_bridge.py  <-->  Claude Code CLI
            message_utils.py   summarizer.py
                   |                |
              session.py        db/ (SQLite)
-                  |
-          sessions.json
+                  |                |
+          sessions.json     scheduler.py
+                              |        |
+                          cron jobs   heartbeat
 ```
 
 The `Formatter` abstraction decouples presentation from logic. Swap `TelegramFormatter` for another implementation to support Discord, Slack, CLI, etc.
 
 The recall system builds context from recent summaries (using short extracts for efficiency) and persistent memories, injecting them into the system prompt each turn.
+
+The scheduler runs as an asyncio background task alongside the bot, checking cron jobs every 60 seconds and running heartbeat checks at configurable intervals. Per-session concurrency allows multiple sessions to process messages in parallel without blocking each other.
