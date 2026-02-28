@@ -79,6 +79,7 @@ class Repository:
         description: str | None = None,
         system_prompt: str | None = None,
         mcp_servers: list[str] | None = None,
+        skills: list[str] | None = None,
         config: dict | None = None,
         is_default: bool = False,
     ) -> Persona:
@@ -88,6 +89,7 @@ class Repository:
             description=description,
             system_prompt=system_prompt,
             mcp_servers=json.dumps(mcp_servers) if mcp_servers else None,
+            skills=json.dumps(skills) if skills else None,
             config=json.dumps(config) if config else None,
             is_default=is_default,
         )
@@ -123,7 +125,7 @@ class Repository:
         if persona is None:
             return None
         for field, value in kwargs.items():
-            if field == "mcp_servers" and isinstance(value, list):
+            if field in ("mcp_servers", "skills") and isinstance(value, list):
                 setattr(persona, field, json.dumps(value))
             elif field == "config" and isinstance(value, dict):
                 setattr(persona, field, json.dumps(value))
@@ -166,6 +168,13 @@ class Repository:
         if persona.mcp_servers is None:
             return []
         return json.loads(persona.mcp_servers)
+
+    @staticmethod
+    def persona_skills(persona: Persona) -> list[str]:
+        """Parse skills JSON field (priority order)."""
+        if persona.skills is None:
+            return []
+        return json.loads(persona.skills)
 
     @staticmethod
     def persona_config(persona: Persona) -> dict:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -266,6 +266,130 @@ class TestCmdPersona:
         await cmd_persona(update, ctx)
         text = update.message.reply_text.call_args[0][0]
         assert "Unknown" in text
+
+    async def test_skills(self, session_manager):
+        from megobari.bot import cmd_persona
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.create_persona(name="dev")
+
+        update = _make_update()
+        ctx = _make_context(
+            session_manager,
+            args=["skills", "dev", "jira,clickhouse"],
+        )
+        await cmd_persona(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "jira" in text
+        assert "clickhouse" in text
+
+        # Verify in DB
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.get_persona("dev")
+        assert Repository.persona_skills(p) == ["jira", "clickhouse"]
+
+    async def test_skills_no_args(self, session_manager):
+        from megobari.bot import cmd_persona
+
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["skills", "dev"])
+        await cmd_persona(update, ctx)
+        assert "Usage" in update.message.reply_text.call_args[0][0]
+
+    async def test_skills_not_found(self, session_manager):
+        from megobari.bot import cmd_persona
+
+        update = _make_update()
+        ctx = _make_context(
+            session_manager, args=["skills", "nope", "jira"]
+        )
+        await cmd_persona(update, ctx)
+        assert "not found" in update.message.reply_text.call_args[0][0]
+
+    async def test_info_shows_skills(self, session_manager):
+        from megobari.bot import cmd_persona
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.create_persona(
+                name="dev", skills=["jira", "clickhouse"]
+            )
+
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["info", "dev"])
+        await cmd_persona(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Skills" in text
+        assert "jira" in text
+
+    async def test_usage_shows_skills(self, session_manager):
+        from megobari.bot import cmd_persona
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_persona(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "skills" in text.lower()
+
+
+# ---------------------------------------------------------------
+# /mcp and /skills commands
+# ---------------------------------------------------------------
+
+
+class TestCmdMcp:
+    @patch("megobari.bot.list_available_servers", return_value=[])
+    async def test_no_servers(self, mock_list, session_manager):
+        from megobari.bot import cmd_mcp
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_mcp(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No MCP servers" in text
+
+    @patch(
+        "megobari.bot.list_available_servers",
+        return_value=["figma", "github", "sgerp"],
+    )
+    async def test_lists_servers(self, mock_list, session_manager):
+        from megobari.bot import cmd_mcp
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_mcp(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "github" in text
+        assert "sgerp" in text
+        assert "figma" in text
+
+
+class TestCmdSkills:
+    @patch("megobari.bot.discover_skills", return_value=[])
+    async def test_no_skills(self, mock_discover, session_manager):
+        from megobari.bot import cmd_skills
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_skills(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No skills" in text
+
+    @patch(
+        "megobari.bot.discover_skills",
+        return_value=["clickhouse-best-practices", "find-skills", "jira"],
+    )
+    async def test_lists_skills(self, mock_discover, session_manager):
+        from megobari.bot import cmd_skills
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_skills(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "jira" in text
+        assert "clickhouse-best-practices" in text
 
 
 # ---------------------------------------------------------------

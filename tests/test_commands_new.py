@@ -1036,6 +1036,44 @@ class TestBuildOptionsMaxTurnsAndBudget:
 
 
 # ---------------------------------------------------------------
+# _build_options with MCP servers
+# ---------------------------------------------------------------
+
+
+class TestBuildOptionsWithMcp:
+    def test_mcp_servers_passed(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t")
+        mcp = {
+            "github": {"command": "npx", "args": ["-y", "server-github"]},
+            "sgerp": {"command": "uv", "args": ["run", "sgerp-mcp"]},
+        }
+        options = _build_options(s, mcp_servers=mcp)
+        assert options.mcp_servers == mcp
+        assert "mcp__github__*" in options.allowed_tools
+        assert "mcp__sgerp__*" in options.allowed_tools
+
+    def test_no_mcp_servers(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t")
+        options = _build_options(s)
+        # No persona MCP → should not have our custom servers
+        assert not options.mcp_servers or options.mcp_servers == {}
+
+    def test_empty_mcp_dict_not_set(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t")
+        options = _build_options(s, mcp_servers={})
+        assert not options.mcp_servers or options.mcp_servers == {}
+
+
+# ---------------------------------------------------------------
 # /autonomous command
 # ---------------------------------------------------------------
 

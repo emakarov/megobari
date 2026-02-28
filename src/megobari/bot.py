@@ -19,6 +19,12 @@ from megobari.config import Config
 from megobari.db import Repository, get_session, init_db
 from megobari.formatting import Formatter, TelegramFormatter
 from megobari.markdown_html import markdown_to_html
+from megobari.mcp_config import (
+    discover_skills,
+    filter_mcp_servers,
+    list_available_servers,
+    load_mcp_registry,
+)
 from megobari.message_utils import (
     format_help,
     format_session_info,
@@ -588,7 +594,8 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "/persona default <name>\n"
             "/persona delete <name>\n"
             "/persona prompt <name> <text>\n"
-            "/persona mcp <name> <server1,server2,...>",
+            "/persona mcp <name> <server1,server2,...>\n"
+            "/persona skills <name> <skill1,skill2,...>",
         )
         return
 
@@ -640,6 +647,7 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Default: {'yes' if p.is_default else 'no'}",
             f"System prompt: {(p.system_prompt[:100] + '...') if p.system_prompt else '—'}",
             f"MCP servers: {p.mcp_servers or '—'}",
+            f"Skills: {p.skills or '—'}",
         ]
         await _reply(update, "\n".join(lines), formatted=True)
 
@@ -695,8 +703,68 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await _reply(update, f"MCP servers for '{name}': {servers}")
 
+    elif sub == "skills":
+        if len(args) < 3:
+            await _reply(
+                update,
+                "Usage: /persona skills <name> <skill1,skill2,...>"
+            )
+            return
+        name = args[1]
+        skill_list = [sk.strip() for sk in args[2].split(",")]
+        async with get_session() as s:
+            repo = Repository(s)
+            p = await repo.update_persona(name, skills=skill_list)
+        if not p:
+            await _reply(update, f"Persona '{name}' not found.")
+            return
+        await _reply(
+            update,
+            f"Skills for '{name}' (priority order): {skill_list}"
+        )
+
     else:
         await _reply(update, f"Unknown subcommand: {sub}. Use /persona for help.")
+
+
+async def cmd_mcp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /mcp command: list available MCP servers."""
+    servers = list_available_servers()
+    if not servers:
+        await _reply(
+            update,
+            "No MCP servers found.\n"
+            "Configure them in ~/.claude/mcp.json"
+        )
+        return
+    lines = [fmt.bold("Available MCP servers:"), ""]
+    for name in servers:
+        lines.append(f"  {fmt.code(name)}")
+    lines.append("")
+    lines.append(
+        "Assign to persona: /persona mcp <name> server1,server2"
+    )
+    await _reply(update, "\n".join(lines), formatted=True)
+
+
+async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /skills command: list available Claude Code skills."""
+    found = discover_skills()
+    if not found:
+        await _reply(
+            update,
+            "No skills found.\n"
+            "Install skills in ~/.claude/skills/"
+        )
+        return
+    lines = [fmt.bold("Available skills:"), ""]
+    for name in found:
+        lines.append(f"  {fmt.code(name)}")
+    lines.append("")
+    lines.append(
+        "Assign to persona: /persona skills <name> skill1,skill2"
+    )
+    await _reply(update, "\n".join(lines), formatted=True)
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1915,8 +1983,26 @@ async def _process_prompt(
         _send_typing_periodically(chat_id, context.bot)
     )
 
-    # Build recall context (summaries + memories)
-    recall = await build_recall_context(session.name)
+    # Build recall context (summaries + memories + persona metadata)
+    recall_result = await build_recall_context(session.name)
+
+    # Extract context string and resolve persona MCP servers
+    recall_context: str | None = None
+    mcp_servers: dict[str, dict] | None = None
+    if recall_result is not None:
+        from megobari.recall import RecallResult
+        if isinstance(recall_result, RecallResult):
+            recall_context = recall_result.context
+            if recall_result.persona_mcp_servers:
+                registry = load_mcp_registry()
+                filtered = filter_mcp_servers(
+                    registry, recall_result.persona_mcp_servers
+                )
+                if filtered:
+                    mcp_servers = filtered
+        else:
+            # Legacy: plain string return
+            recall_context = recall_result
 
     try:
         if session.streaming:
@@ -1927,7 +2013,8 @@ async def _process_prompt(
                 session=session,
                 on_text_chunk=accumulator.on_chunk,
                 on_tool_use=accumulator.on_tool_use,
-                recall_context=recall,
+                recall_context=recall_context,
+                mcp_servers=mcp_servers,
             )
             full_text = await accumulator.finalize()
 
@@ -1993,7 +2080,8 @@ async def _process_prompt(
                 prompt=user_text,
                 session=session,
                 on_tool_use=_on_tool_use_ns,
-                recall_context=recall,
+                recall_context=recall_context,
+                mcp_servers=mcp_servers,
             )
 
             # Delete the status message before sending the real response
@@ -2107,6 +2195,8 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("restart", cmd_restart, filters=user_filter))
     app.add_handler(CommandHandler("release", cmd_release, filters=user_filter))
     app.add_handler(CommandHandler("persona", cmd_persona, filters=user_filter))
+    app.add_handler(CommandHandler("mcp", cmd_mcp, filters=user_filter))
+    app.add_handler(CommandHandler("skills", cmd_skills, filters=user_filter))
     app.add_handler(CommandHandler("memory", cmd_memory, filters=user_filter))
     app.add_handler(CommandHandler("summaries", cmd_summaries, filters=user_filter))
     app.add_handler(CommandHandler("think", cmd_think, filters=user_filter))

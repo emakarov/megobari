@@ -870,7 +870,7 @@ class TestHandleMessage:
 
         async def fake_send(
             prompt, session, on_text_chunk=None,
-            on_tool_use=None, recall_context=None,
+            on_tool_use=None, recall_context=None, **kwargs,
         ):
             if on_tool_use:
                 await on_tool_use("Read", {"file_path": "/a/b/foo.py"})
@@ -1072,7 +1072,7 @@ class TestHandleMessageStreaming:
 
         async def fake_send(
             prompt, session, on_text_chunk=None,
-            on_tool_use=None, recall_context=None,
+            on_tool_use=None, recall_context=None, **kwargs,
         ):
             if on_text_chunk:
                 await on_text_chunk(long_text)
@@ -1129,7 +1129,7 @@ class TestHandleMessageStreaming:
 
         async def fake_send(
             prompt, session, on_text_chunk=None,
-            on_tool_use=None, recall_context=None,
+            on_tool_use=None, recall_context=None, **kwargs,
         ):
             if on_text_chunk:
                 await on_text_chunk(response_with_action)
@@ -1175,7 +1175,7 @@ class TestHandleMessageStreaming:
 
         async def fake_send(
             prompt, session, on_text_chunk=None,
-            on_tool_use=None, recall_context=None,
+            on_tool_use=None, recall_context=None, **kwargs,
         ):
             if on_text_chunk:
                 await on_text_chunk(response_with_action)

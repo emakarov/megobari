@@ -224,7 +224,9 @@ def _build_thinking_config(session: Session) -> dict | None:
 
 
 def _build_options(
-    session: Session, recall_context: str | None = None
+    session: Session,
+    recall_context: str | None = None,
+    mcp_servers: dict[str, dict] | None = None,
 ) -> ClaudeAgentOptions:
     """Consolidate all ClaudeAgentOptions construction."""
     options = ClaudeAgentOptions(
@@ -246,6 +248,12 @@ def _build_options(
         options.max_budget_usd = session.max_budget_usd
     if session.session_id:
         options.resume = session.session_id
+    # Persona-selected MCP servers
+    if mcp_servers:
+        options.mcp_servers = mcp_servers
+        options.allowed_tools = [
+            f"mcp__{name}__*" for name in mcp_servers
+        ]
     return options
 
 
@@ -255,6 +263,7 @@ async def send_to_claude(
     on_text_chunk: Callable[[str], Awaitable[None]] | None = None,
     on_tool_use: Callable[[str, dict], Awaitable[None]] | None = None,
     recall_context: str | None = None,
+    mcp_servers: dict[str, dict] | None = None,
 ) -> tuple[str, list[tuple[str, dict]], str | None, QueryUsage]:
     """Send a prompt to Claude via the Agent SDK.
 
@@ -267,10 +276,11 @@ async def send_to_claude(
         on_text_chunk: Async callback invoked with each streamed text chunk.
         on_tool_use: Async callback invoked with tool name and input dict.
         recall_context: Optional memory/summary context injected into system prompt.
+        mcp_servers: Optional MCP server configs from persona.
     """
     logger.info(
         "Sending to Claude: prompt=%r, session_id=%s, resume=%s, "
-        "permission_mode=%s, cwd=%s, thinking=%s, effort=%s",
+        "permission_mode=%s, cwd=%s, thinking=%s, effort=%s, mcp=%s",
         prompt[:200] + ("..." if len(prompt) > 200 else ""),
         session.session_id or "(new)",
         bool(session.session_id),
@@ -278,9 +288,10 @@ async def send_to_claude(
         session.cwd,
         session.thinking,
         session.effort,
+        list(mcp_servers.keys()) if mcp_servers else "[]",
     )
 
-    options = _build_options(session, recall_context)
+    options = _build_options(session, recall_context, mcp_servers)
     empty_usage = QueryUsage()
 
     try:

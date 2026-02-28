@@ -57,6 +57,8 @@ class Persona(Base):
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # JSON list of MCP server names to enable, e.g. '["sgerp", "transit"]'
     mcp_servers: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list of skill names (priority order), e.g. '["jira", "clickhouse"]'
+    skills: Mapped[str | None] = mapped_column(Text, nullable=True)
     # JSON object of extra config, e.g. '{"temperature": 0.7}'
     config: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)

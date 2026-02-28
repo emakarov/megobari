@@ -130,6 +130,8 @@ def format_help(fmt: Formatter | None = None) -> str:
         ("/restart", "Restart the bot process"),
         (f"/release {fmt.code('<version>')}", "Bump version, tag & publish to PyPI"),
         (f"/persona {fmt.code('<sub>')}", "Manage personas (list, create, default, ...)"),
+        ("/mcp", "List available MCP servers"),
+        ("/skills", "List available Claude Code skills"),
         (f"/memory {fmt.code('<sub>')}", "Manage memories (list, set, get, delete)"),
         (f"/summaries {fmt.code('[sub]')}", "View conversation summaries"),
         (f"/model {fmt.code('[name]')}", "Switch model (sonnet/opus/haiku/off)"),
