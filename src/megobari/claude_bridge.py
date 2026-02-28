@@ -240,6 +240,10 @@ def _build_options(
         options.effort = session.effort
     if session.model:
         options.model = session.model
+    if session.max_turns is not None:
+        options.max_turns = session.max_turns
+    if session.max_budget_usd is not None:
+        options.max_budget_usd = session.max_budget_usd
     if session.session_id:
         options.resume = session.session_id
     return options

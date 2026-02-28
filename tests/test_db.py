@@ -626,3 +626,174 @@ async def test_init_db_alembic_idempotent(tmp_path):
 
     await close_db()
     await init_db("sqlite+aiosqlite://")  # restore for fixture
+
+
+# ---------------------------------------------------------------
+# Cron Jobs
+# ---------------------------------------------------------------
+
+
+async def test_add_cron_job():
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.add_cron_job(
+            name="morning",
+            cron_expression="0 7 * * *",
+            prompt="Good morning briefing",
+            session_name="default",
+        )
+    assert job.id is not None
+    assert job.name == "morning"
+    assert job.cron_expression == "0 7 * * *"
+    assert job.prompt == "Good morning briefing"
+    assert job.session_name == "default"
+    assert job.enabled is True
+    assert job.isolated is False
+    assert job.last_run_at is None
+
+
+async def test_add_cron_job_with_options():
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.add_cron_job(
+            name="isolated_task",
+            cron_expression="30 12 * * 1-5",
+            prompt="Run checks",
+            session_name="work",
+            isolated=True,
+            timezone="US/Pacific",
+        )
+    assert job.isolated is True
+    assert job.timezone == "US/Pacific"
+
+
+async def test_list_cron_jobs():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("alpha", "0 8 * * *", "test", "default")
+        await repo.add_cron_job("bravo", "0 9 * * *", "test", "default")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        jobs = await repo.list_cron_jobs()
+    assert len(jobs) == 2
+    assert jobs[0].name == "alpha"
+    assert jobs[1].name == "bravo"
+
+
+async def test_list_cron_jobs_enabled_only():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("active", "0 8 * * *", "test", "default")
+        j2 = await repo.add_cron_job("paused", "0 9 * * *", "test", "default")
+        j2.enabled = False
+        await s.flush()
+
+    async with get_session() as s:
+        repo = Repository(s)
+        jobs = await repo.list_cron_jobs(enabled_only=True)
+    assert len(jobs) == 1
+    assert jobs[0].name == "active"
+
+
+async def test_get_cron_job():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("target", "0 8 * * *", "test", "default")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.get_cron_job("target")
+    assert job is not None
+    assert job.name == "target"
+
+
+async def test_get_cron_job_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.get_cron_job("nope")
+    assert job is None
+
+
+async def test_delete_cron_job():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("temp", "0 8 * * *", "test", "default")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_cron_job("temp")
+    assert deleted is True
+
+    async with get_session() as s:
+        repo = Repository(s)
+        assert await repo.get_cron_job("temp") is None
+
+
+async def test_delete_cron_job_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        deleted = await repo.delete_cron_job("nope")
+    assert deleted is False
+
+
+async def test_toggle_cron_job():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("toggle_test", "0 8 * * *", "test", "default")
+
+    # Disable
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.toggle_cron_job("toggle_test", enabled=False)
+    assert job is not None
+    assert job.enabled is False
+
+    # Re-enable
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.toggle_cron_job("toggle_test", enabled=True)
+    assert job is not None
+    assert job.enabled is True
+
+
+async def test_toggle_cron_job_not_found():
+    async with get_session() as s:
+        repo = Repository(s)
+        result = await repo.toggle_cron_job("nope", enabled=False)
+    assert result is None
+
+
+async def test_update_cron_last_run():
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.add_cron_job("lastrun", "0 8 * * *", "test", "default")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        await repo.update_cron_last_run("lastrun")
+
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.get_cron_job("lastrun")
+    assert job.last_run_at is not None
+
+
+async def test_cron_job_repr():
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.add_cron_job("repr_test", "0 8 * * *", "test", "default")
+    r = repr(job)
+    assert "repr_test" in r
+    assert "0 8 * * *" in r
+    assert "enabled" in r
+
+
+async def test_cron_job_repr_disabled():
+    async with get_session() as s:
+        repo = Repository(s)
+        job = await repo.add_cron_job("dis_test", "0 8 * * *", "test", "default")
+        job.enabled = False
+        await s.flush()
+    r = repr(job)
+    assert "disabled" in r

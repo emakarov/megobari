@@ -8,7 +8,15 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from megobari.db.models import ConversationSummary, Memory, Message, Persona, UsageRecord, User
+from megobari.db.models import (
+    ConversationSummary,
+    CronJob,
+    Memory,
+    Message,
+    Persona,
+    UsageRecord,
+    User,
+)
 
 
 def _utcnow() -> datetime:
@@ -507,3 +515,70 @@ class Repository:
         stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Cron Jobs
+    # ------------------------------------------------------------------
+
+    async def add_cron_job(
+        self,
+        name: str,
+        cron_expression: str,
+        prompt: str,
+        session_name: str,
+        isolated: bool = False,
+        timezone: str | None = None,
+    ) -> CronJob:
+        """Create a new cron job."""
+        job = CronJob(
+            name=name,
+            cron_expression=cron_expression,
+            prompt=prompt,
+            session_name=session_name,
+            isolated=isolated,
+            timezone=timezone,
+        )
+        self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def list_cron_jobs(self, enabled_only: bool = False) -> list[CronJob]:
+        """List all cron jobs, optionally only enabled ones."""
+        stmt = select(CronJob).order_by(CronJob.created_at.asc())
+        if enabled_only:
+            stmt = stmt.where(CronJob.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_cron_job(self, name: str) -> CronJob | None:
+        """Get a cron job by name."""
+        stmt = select(CronJob).where(CronJob.name == name)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def delete_cron_job(self, name: str) -> bool:
+        """Delete a cron job by name. Returns True if deleted."""
+        job = await self.get_cron_job(name)
+        if job is None:
+            return False
+        await self.session.delete(job)
+        await self.session.flush()
+        return True
+
+    async def toggle_cron_job(self, name: str, enabled: bool) -> CronJob | None:
+        """Enable or disable a cron job. Returns the updated job or None."""
+        job = await self.get_cron_job(name)
+        if job is None:
+            return None
+        job.enabled = enabled
+        await self.session.flush()
+        return job
+
+    async def update_cron_last_run(self, name: str) -> None:
+        """Update the last_run_at timestamp for a cron job."""
+        stmt = (
+            update(CronJob)
+            .where(CronJob.name == name)
+            .values(last_run_at=_utcnow())
+        )
+        await self.session.execute(stmt)

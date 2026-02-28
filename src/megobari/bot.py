@@ -29,6 +29,7 @@ from megobari.message_utils import (
 )
 from megobari.recall import build_recall_context
 from megobari.session import (
+    DEFAULT_AUTONOMOUS_MAX_TURNS,
     MODEL_ALIASES,
     VALID_EFFORT_LEVELS,
     VALID_PERMISSION_MODES,
@@ -950,6 +951,109 @@ async def cmd_effort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
 
+# -- /autonomous command --
+
+
+async def cmd_autonomous(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /autonomous command: toggle autonomous mode.
+
+    Autonomous mode sets: bypassPermissions, max effort, high max_turns.
+    """
+    sm = _get_sm(context)
+    session = sm.current
+    if session is None:
+        await _reply(update, "No active session. Use /new <name> first.")
+        return
+
+    args = context.args or []
+
+    if not args:
+        # Show current status
+        is_auto = (
+            session.permission_mode == "bypassPermissions"
+            and session.effort == "max"
+            and session.max_turns is not None
+            and session.max_turns >= DEFAULT_AUTONOMOUS_MAX_TURNS
+        )
+        status = "ON" if is_auto else "OFF"
+        lines = [
+            fmt.bold(f"Autonomous mode: {status}"),
+            f"  Permissions: {session.permission_mode}",
+            f"  Effort: {session.effort or 'default'}",
+            f"  Max turns: {session.max_turns or 'default'}",
+            f"  Budget: ${session.max_budget_usd:.2f}"
+            if session.max_budget_usd else "  Budget: unlimited",
+        ]
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    sub = args[0].lower()
+
+    if sub in ("on", "true", "1"):
+        session.permission_mode = "bypassPermissions"
+        session.effort = "max"
+        session.max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS
+        sm._save()
+        await _reply(
+            update,
+            f"🚀 Autonomous mode ON\n"
+            f"  Permissions: bypassPermissions\n"
+            f"  Effort: max\n"
+            f"  Max turns: {DEFAULT_AUTONOMOUS_MAX_TURNS}",
+        )
+    elif sub in ("off", "false", "0"):
+        session.permission_mode = "default"
+        session.effort = None
+        session.max_turns = None
+        session.max_budget_usd = None
+        sm._save()
+        await _reply(update, "✅ Autonomous mode OFF (defaults restored)")
+    elif sub == "turns":
+        if len(args) < 2:
+            await _reply(update, f"Max turns: {session.max_turns or 'default'}")
+            return
+        try:
+            val = int(args[1])
+            if val < 1:
+                raise ValueError
+            session.max_turns = val
+            sm._save()
+            await _reply(update, f"✅ Max turns: {val}")
+        except ValueError:
+            await _reply(update, "Usage: /autonomous turns <number>")
+    elif sub == "budget":
+        if len(args) < 2:
+            if session.max_budget_usd:
+                await _reply(update, f"Budget: ${session.max_budget_usd:.2f}")
+            else:
+                await _reply(update, "Budget: unlimited")
+            return
+        if args[1].lower() == "off":
+            session.max_budget_usd = None
+            sm._save()
+            await _reply(update, "✅ Budget limit removed")
+        else:
+            try:
+                val = float(args[1])
+                if val <= 0:
+                    raise ValueError
+                session.max_budget_usd = val
+                sm._save()
+                await _reply(update, f"✅ Budget: ${val:.2f}")
+            except ValueError:
+                await _reply(update, "Usage: /autonomous budget <amount|off>")
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/autonomous — show current status\n"
+            "/autonomous on — enable (bypass + max effort + 50 turns)\n"
+            "/autonomous off — disable (restore defaults)\n"
+            "/autonomous turns <n> — set max tool turns\n"
+            "/autonomous budget <$|off> — set cost limit per query",
+        )
+
+
 # -- /usage command --
 
 
@@ -1461,6 +1565,214 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 
+# -- /cron command --
+
+
+async def cmd_cron(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /cron command: manage scheduled tasks."""
+    args = context.args or []
+    sm = _get_sm(context)
+    session = sm.current
+
+    if not args:
+        # List all cron jobs
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                jobs = await repo.list_cron_jobs()
+        except Exception:
+            await _reply(update, "Failed to read cron jobs from DB.")
+            return
+        if not jobs:
+            await _reply(update, "No cron jobs. Use /cron add <name> <expr> <prompt>")
+            return
+        lines = [fmt.bold("Scheduled jobs:"), ""]
+        for j in jobs:
+            state = "✅" if j.enabled else "⏸"
+            last = j.last_run_at.strftime("%m-%d %H:%M") if j.last_run_at else "never"
+            preview = j.prompt[:60] + ("..." if len(j.prompt) > 60 else "")
+            lines.append(
+                f"{state} {fmt.bold(fmt.escape(j.name))} "
+                f"{fmt.code(j.cron_expression)} [{j.session_name}]"
+            )
+            lines.append(f"   {fmt.escape(preview)} (last: {last})")
+        await _reply(update, "\n".join(lines), formatted=True)
+        return
+
+    sub = args[0].lower()
+
+    if sub == "add":
+        # /cron add <name> <cron_expr(5 fields)> <prompt...>
+        if len(args) < 8:
+            await _reply(
+                update,
+                "Usage: /cron add <name> <min> <hour> <dom> <mon> <dow> <prompt...>\n"
+                "Example: /cron add morning 0 7 * * * Good morning briefing",
+            )
+            return
+        name = args[1]
+        cron_expr = " ".join(args[2:7])
+        prompt = " ".join(args[7:])
+
+        # Validate cron expression
+        try:
+            from croniter import croniter
+            croniter(cron_expr)
+        except (ValueError, KeyError):
+            await _reply(update, f"Invalid cron expression: {fmt.code(cron_expr)}", formatted=True)
+            return
+
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                existing = await repo.get_cron_job(name)
+                if existing:
+                    await _reply(update, f"Job '{name}' already exists. Delete it first.")
+                    return
+                await repo.add_cron_job(
+                    name=name,
+                    cron_expression=cron_expr,
+                    prompt=prompt,
+                    session_name=session.name if session else "default",
+                )
+            await _reply(
+                update,
+                f"✅ Cron job '{name}' created\n"
+                f"  Schedule: {cron_expr}\n"
+                f"  Session: {session.name if session else 'default'}\n"
+                f"  Prompt: {prompt[:100]}",
+            )
+        except Exception:
+            await _reply(update, "Failed to create cron job.")
+
+    elif sub == "remove" or sub == "delete":
+        if len(args) < 2:
+            await _reply(update, "Usage: /cron remove <name>")
+            return
+        name = args[1]
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                deleted = await repo.delete_cron_job(name)
+            if deleted:
+                await _reply(update, f"✅ Deleted cron job '{name}'")
+            else:
+                await _reply(update, f"Job '{name}' not found.")
+        except Exception:
+            await _reply(update, "Failed to delete cron job.")
+
+    elif sub in ("pause", "disable"):
+        if len(args) < 2:
+            await _reply(update, "Usage: /cron pause <name>")
+            return
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                job = await repo.toggle_cron_job(args[1], enabled=False)
+            if job:
+                await _reply(update, f"⏸ Paused '{args[1]}'")
+            else:
+                await _reply(update, f"Job '{args[1]}' not found.")
+        except Exception:
+            await _reply(update, "Failed to pause cron job.")
+
+    elif sub in ("resume", "enable"):
+        if len(args) < 2:
+            await _reply(update, "Usage: /cron resume <name>")
+            return
+        try:
+            async with get_session() as s:
+                repo = Repository(s)
+                job = await repo.toggle_cron_job(args[1], enabled=True)
+            if job:
+                await _reply(update, f"✅ Resumed '{args[1]}'")
+            else:
+                await _reply(update, f"Job '{args[1]}' not found.")
+        except Exception:
+            await _reply(update, "Failed to resume cron job.")
+
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/cron — list all jobs\n"
+            "/cron add <name> <m> <h> <dom> <mon> <dow> <prompt>\n"
+            "/cron remove <name>\n"
+            "/cron pause <name>\n"
+            "/cron resume <name>",
+        )
+
+
+# -- /heartbeat command --
+
+
+async def cmd_heartbeat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /heartbeat command: manage heartbeat daemon."""
+    from megobari.scheduler import Scheduler
+
+    args = context.args or []
+    scheduler: Scheduler | None = context.bot_data.get("scheduler")
+
+    if not args:
+        if scheduler and scheduler.running:
+            await _reply(update, "💓 Heartbeat is running")
+        else:
+            await _reply(update, "💤 Heartbeat is stopped. Use /heartbeat on")
+        return
+
+    sub = args[0].lower()
+    chat_id = update.effective_chat.id
+
+    if sub in ("on", "start"):
+        interval = 30
+        if len(args) > 1:
+            try:
+                interval = int(args[1])
+            except ValueError:
+                await _reply(update, "Usage: /heartbeat on [minutes]")
+                return
+
+        if scheduler and scheduler.running:
+            scheduler.stop()
+
+        sm = _get_sm(context)
+        session = sm.current
+        cwd = session.cwd if session else str(Path.home())
+        scheduler = Scheduler(
+            bot=context.bot,
+            chat_id=chat_id,
+            cwd=cwd,
+            heartbeat_interval_min=interval,
+        )
+        scheduler.start()
+        context.bot_data["scheduler"] = scheduler
+        await _reply(update, f"💓 Heartbeat started (every {interval}min)")
+
+    elif sub in ("off", "stop"):
+        if scheduler:
+            scheduler.stop()
+            context.bot_data["scheduler"] = None
+        await _reply(update, "💤 Heartbeat stopped")
+
+    elif sub == "now":
+        # Run heartbeat immediately
+        if scheduler:
+            asyncio.create_task(scheduler._run_heartbeat())
+            await _reply(update, "💓 Running heartbeat check now...")
+        else:
+            await _reply(update, "No scheduler running. Use /heartbeat on first.")
+
+    else:
+        await _reply(
+            update,
+            "Usage:\n"
+            "/heartbeat — show status\n"
+            "/heartbeat on [minutes] — start (default 30min)\n"
+            "/heartbeat off — stop\n"
+            "/heartbeat now — run check immediately",
+        )
+
+
 # -- Message handler --
 
 
@@ -1805,6 +2117,9 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     app.add_handler(CommandHandler("model", cmd_model, filters=user_filter))
     app.add_handler(CommandHandler("context", cmd_context, filters=user_filter))
     app.add_handler(CommandHandler("history", cmd_history, filters=user_filter))
+    app.add_handler(CommandHandler("autonomous", cmd_autonomous, filters=user_filter))
+    app.add_handler(CommandHandler("cron", cmd_cron, filters=user_filter))
+    app.add_handler(CommandHandler("heartbeat", cmd_heartbeat, filters=user_filter))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & user_filter,

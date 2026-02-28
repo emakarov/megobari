@@ -163,6 +163,32 @@ class UsageRecord(Base):
         )
 
 
+class CronJob(Base):
+    """Scheduled task that runs on a cron expression."""
+
+    __tablename__ = "cron_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    cron_expression: Mapped[str] = mapped_column(String(100), nullable=False)  # 5-field
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    session_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    isolated: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    timezone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def __repr__(self) -> str:
+        """Return developer-friendly representation of CronJob."""
+        state = "enabled" if self.enabled else "disabled"
+        return f"<CronJob name={self.name!r} cron={self.cron_expression!r} [{state}]>"
+
+
 class Memory(Base):
     """Long-term factual memory — things learned about the user or context."""
 

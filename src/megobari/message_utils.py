@@ -70,6 +70,11 @@ def format_session_info(
         line("Model", session.model or "default"),
         line("Thinking", thinking_val),
         line("Effort", session.effort or "default"),
+        line("Max turns", str(session.max_turns) if session.max_turns else "default"),
+        line(
+            "Budget",
+            f"${session.max_budget_usd:.2f}" if session.max_budget_usd else "unlimited",
+        ),
         line("Has context", "yes" if session.session_id else "no"),
         line("Created", session.created_at),
         line("Last used", session.last_used_at),
@@ -135,6 +140,9 @@ def format_help(fmt: Formatter | None = None) -> str:
         ("/history", "Browse past conversations"),
         ("/compact", "Summarize and reset context"),
         ("/doctor", "Run health checks"),
+        (f"/autonomous {fmt.code('[on|off]')}", "Toggle autonomous mode"),
+        (f"/cron {fmt.code('[sub]')}", "Manage scheduled tasks"),
+        (f"/heartbeat {fmt.code('[on|off]')}", "Manage heartbeat daemon"),
         ("/help", "Show this message"),
     ]
     lines = [title, ""]

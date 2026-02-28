@@ -21,6 +21,9 @@ VALID_THINKING_MODES: set[str] = {"adaptive", "enabled", "disabled"}
 EffortLevel = Literal["low", "medium", "high", "max"]
 VALID_EFFORT_LEVELS: set[str] = {"low", "medium", "high", "max"}
 
+# Default max_turns when autonomous mode is active.
+DEFAULT_AUTONOMOUS_MAX_TURNS = 50
+
 # Short aliases → full model names
 MODEL_ALIASES: dict[str, str] = {
     "sonnet": "claude-sonnet-4-20250514",
@@ -45,6 +48,8 @@ class Session:
     thinking_budget: int | None = None
     effort: EffortLevel | None = None
     model: str | None = None
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
     created_at: str = field(default_factory=lambda: _now_iso())
     last_used_at: str = field(default_factory=lambda: _now_iso())
 

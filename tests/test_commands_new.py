@@ -942,3 +942,763 @@ class TestUsageDBError:
         await cmd_usage(update, ctx)
         text = update.message.reply_text.call_args[0][0]
         assert "Failed to read usage" in text
+
+
+# ---------------------------------------------------------------
+# Session max_turns and max_budget_usd fields
+# ---------------------------------------------------------------
+
+
+class TestSessionMaxTurnsAndBudget:
+    def test_default_none(self):
+        from megobari.session import Session
+
+        s = Session(name="t")
+        assert s.max_turns is None
+        assert s.max_budget_usd is None
+
+    def test_set_values(self):
+        from megobari.session import Session
+
+        s = Session(name="t", max_turns=50, max_budget_usd=1.5)
+        assert s.max_turns == 50
+        assert s.max_budget_usd == 1.5
+
+    def test_serialization(self):
+        from dataclasses import asdict
+
+        from megobari.session import Session
+
+        s = Session(name="t", max_turns=25, max_budget_usd=0.5)
+        d = asdict(s)
+        assert d["max_turns"] == 25
+        assert d["max_budget_usd"] == 0.5
+
+    def test_round_trip(self):
+        from dataclasses import asdict
+
+        from megobari.session import Session
+
+        s = Session(name="t", max_turns=100, max_budget_usd=2.0)
+        d = asdict(s)
+        s2 = Session(**d)
+        assert s2.max_turns == 100
+        assert s2.max_budget_usd == 2.0
+
+
+# ---------------------------------------------------------------
+# _build_options with max_turns and max_budget_usd
+# ---------------------------------------------------------------
+
+
+class TestBuildOptionsMaxTurnsAndBudget:
+    def test_includes_max_turns(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t", max_turns=50)
+        options = _build_options(s)
+        assert options.max_turns == 50
+
+    def test_no_max_turns_when_none(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t")
+        options = _build_options(s)
+        assert not hasattr(options, "max_turns") or options.max_turns is None
+
+    def test_includes_max_budget_usd(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t", max_budget_usd=1.5)
+        options = _build_options(s)
+        assert options.max_budget_usd == 1.5
+
+    def test_no_max_budget_when_none(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t")
+        options = _build_options(s)
+        assert not hasattr(options, "max_budget_usd") or options.max_budget_usd is None
+
+    def test_both_set(self):
+        from megobari.claude_bridge import _build_options
+        from megobari.session import Session
+
+        s = Session(name="t", max_turns=25, max_budget_usd=0.5, effort="max")
+        options = _build_options(s)
+        assert options.max_turns == 25
+        assert options.max_budget_usd == 0.5
+        assert options.effort == "max"
+
+
+# ---------------------------------------------------------------
+# /autonomous command
+# ---------------------------------------------------------------
+
+
+class TestCmdAutonomous:
+    async def test_no_session(self, session_manager):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(session_manager)
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No active session" in text
+
+    async def test_show_status_off(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "OFF" in text
+
+    async def test_show_status_on(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+        from megobari.session import DEFAULT_AUTONOMOUS_MAX_TURNS
+
+        session = sm_with_session.current
+        session.permission_mode = "bypassPermissions"
+        session.effort = "max"
+        session.max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "ON" in text
+
+    async def test_turn_on(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["on"])
+        await cmd_autonomous(update, ctx)
+        session = sm_with_session.current
+        assert session.permission_mode == "bypassPermissions"
+        assert session.effort == "max"
+        assert session.max_turns == 50
+        text = update.message.reply_text.call_args[0][0]
+        assert "ON" in text
+
+    async def test_turn_off(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        session = sm_with_session.current
+        session.permission_mode = "bypassPermissions"
+        session.effort = "max"
+        session.max_turns = 50
+        session.max_budget_usd = 1.0
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["off"])
+        await cmd_autonomous(update, ctx)
+        assert session.permission_mode == "default"
+        assert session.effort is None
+        assert session.max_turns is None
+        assert session.max_budget_usd is None
+        text = update.message.reply_text.call_args[0][0]
+        assert "OFF" in text
+
+    async def test_set_turns(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["turns", "100"])
+        await cmd_autonomous(update, ctx)
+        assert sm_with_session.current.max_turns == 100
+        text = update.message.reply_text.call_args[0][0]
+        assert "100" in text
+
+    async def test_set_turns_invalid(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["turns", "abc"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_set_turns_too_low(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["turns", "0"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_show_turns_no_value(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["turns"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Max turns" in text
+
+    async def test_set_budget(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget", "2.50"])
+        await cmd_autonomous(update, ctx)
+        assert sm_with_session.current.max_budget_usd == 2.50
+        text = update.message.reply_text.call_args[0][0]
+        assert "$2.50" in text
+
+    async def test_budget_off(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        sm_with_session.current.max_budget_usd = 1.0
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget", "off"])
+        await cmd_autonomous(update, ctx)
+        assert sm_with_session.current.max_budget_usd is None
+        text = update.message.reply_text.call_args[0][0]
+        assert "removed" in text.lower()
+
+    async def test_budget_invalid(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget", "xyz"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_budget_negative(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget", "-5"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_show_budget_no_arg(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "unlimited" in text.lower()
+
+    async def test_show_budget_with_value(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        sm_with_session.current.max_budget_usd = 3.0
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["budget"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "$3.00" in text
+
+    async def test_invalid_subcommand(self, sm_with_session):
+        from megobari.bot import cmd_autonomous
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["bogus"])
+        await cmd_autonomous(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_on_aliases(self, sm_with_session):
+        """Test 'true' and '1' work same as 'on'."""
+        from megobari.bot import cmd_autonomous
+
+        for arg in ("true", "1"):
+            sm_with_session.current.permission_mode = "default"
+            sm_with_session.current.effort = None
+            sm_with_session.current.max_turns = None
+            update = _make_update()
+            ctx = _make_context(sm_with_session, args=[arg])
+            await cmd_autonomous(update, ctx)
+            assert sm_with_session.current.permission_mode == "bypassPermissions"
+
+    async def test_off_aliases(self, sm_with_session):
+        """Test 'false' and '0' work same as 'off'."""
+        from megobari.bot import cmd_autonomous
+
+        for arg in ("false", "0"):
+            sm_with_session.current.permission_mode = "bypassPermissions"
+            sm_with_session.current.effort = "max"
+            sm_with_session.current.max_turns = 50
+            update = _make_update()
+            ctx = _make_context(sm_with_session, args=[arg])
+            await cmd_autonomous(update, ctx)
+            assert sm_with_session.current.permission_mode == "default"
+
+
+# ---------------------------------------------------------------
+# /cron command
+# ---------------------------------------------------------------
+
+
+class TestCmdCron:
+    async def test_list_empty(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No cron jobs" in text
+
+    async def test_list_with_jobs(self, sm_with_session):
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="morning",
+                cron_expression="0 7 * * *",
+                prompt="Good morning briefing",
+                session_name="test",
+            )
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "morning" in text
+        assert "0 7 * * *" in text
+
+    @patch("megobari.bot.get_session")
+    async def test_list_db_failure(self, mock_gs, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        mock_gs.side_effect = Exception("DB down")
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed to read cron jobs" in text
+
+    async def test_add_job(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session,
+            args=["add", "morning", "0", "7", "*", "*", "*", "Good morning briefing"],
+        )
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "morning" in text
+        assert "created" in text.lower()
+
+    async def test_add_job_too_few_args(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["add", "morning"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_add_duplicate(self, sm_with_session):
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="daily",
+                cron_expression="0 9 * * *",
+                prompt="test",
+                session_name="test",
+            )
+
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session,
+            args=["add", "daily", "0", "9", "*", "*", "*", "test prompt"],
+        )
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "already exists" in text
+
+    async def test_add_invalid_cron_expr(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session,
+            args=["add", "bad", "invalid", "cron", "expr", "ess", "ion", "prompt"],
+        )
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid cron" in text
+
+    async def test_remove_job(self, sm_with_session):
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="temp",
+                cron_expression="0 12 * * *",
+                prompt="test",
+                session_name="test",
+            )
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove", "temp"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Deleted" in text
+
+    async def test_remove_not_found(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove", "nope"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_remove_no_name(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_pause_job(self, sm_with_session):
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="daily",
+                cron_expression="0 9 * * *",
+                prompt="test",
+                session_name="test",
+            )
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause", "daily"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Paused" in text
+
+    async def test_pause_not_found(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause", "nope"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_pause_no_name(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_resume_job(self, sm_with_session):
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="daily",
+                cron_expression="0 9 * * *",
+                prompt="test",
+                session_name="test",
+            )
+            await repo.toggle_cron_job("daily", enabled=False)
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume", "daily"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Resumed" in text
+
+    async def test_resume_not_found(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume", "nope"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "not found" in text
+
+    async def test_resume_no_name(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_invalid_subcommand(self, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["bogus"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    @patch("megobari.bot.get_session")
+    async def test_remove_db_failure(self, mock_gs, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        mock_gs.side_effect = Exception("DB error")
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["remove", "something"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed" in text
+
+    @patch("megobari.bot.get_session")
+    async def test_pause_db_failure(self, mock_gs, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        mock_gs.side_effect = Exception("DB error")
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["pause", "something"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed" in text
+
+    @patch("megobari.bot.get_session")
+    async def test_resume_db_failure(self, mock_gs, sm_with_session):
+        from megobari.bot import cmd_cron
+
+        mock_gs.side_effect = Exception("DB error")
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["resume", "something"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed" in text
+
+    @patch("megobari.bot.get_session")
+    async def test_add_db_failure(self, mock_gs, sm_with_session):
+        """Cover the generic exception path when creating a job fails."""
+        # First call succeeds (croniter validation), second call (DB) fails
+        from contextlib import asynccontextmanager
+
+        from megobari.bot import cmd_cron
+
+        call_count = 0
+
+        @asynccontextmanager
+        async def _fake_gs():
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise Exception("DB error")
+            # First call: need a real session for croniter validation
+            # But since croniter validation doesn't use DB, just raise on any DB call
+            raise Exception("DB error")
+
+        mock_gs.side_effect = _fake_gs
+        update = _make_update()
+        ctx = _make_context(
+            sm_with_session,
+            args=["add", "test", "0", "7", "*", "*", "*", "hello"],
+        )
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Failed" in text
+
+    async def test_delete_alias(self, sm_with_session):
+        """'delete' should work as alias for 'remove'."""
+        from megobari.bot import cmd_cron
+        from megobari.db import Repository, get_session
+
+        async with get_session() as s:
+            repo = Repository(s)
+            await repo.add_cron_job(
+                name="tmp",
+                cron_expression="0 12 * * *",
+                prompt="test",
+                session_name="test",
+            )
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["delete", "tmp"])
+        await cmd_cron(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Deleted" in text
+
+
+# ---------------------------------------------------------------
+# /heartbeat command
+# ---------------------------------------------------------------
+
+
+class TestCmdHeartbeat:
+    async def test_status_stopped(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "stopped" in text.lower()
+
+    async def test_status_running(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.running = True
+        update = _make_update()
+        ctx = _make_context(sm_with_session)
+        ctx.bot_data["scheduler"] = mock_scheduler
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "running" in text.lower()
+
+    async def test_start(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["on"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        # Scheduler should be stored in bot_data
+        scheduler = ctx.bot_data["scheduler"]
+        assert scheduler is not None
+        assert scheduler.running is True
+        scheduler.stop()
+        text = update.message.reply_text.call_args[0][0]
+        assert "started" in text.lower()
+
+    async def test_start_with_interval(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["on", "15"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        scheduler = ctx.bot_data["scheduler"]
+        assert scheduler is not None
+        assert scheduler._heartbeat_interval == 15 * 60
+        scheduler.stop()
+        text = update.message.reply_text.call_args[0][0]
+        assert "15" in text
+
+    async def test_start_invalid_interval(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["on", "abc"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_start_stops_existing(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        existing = MagicMock()
+        existing.running = True
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["on"])
+        ctx.bot_data["scheduler"] = existing
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        existing.stop.assert_called_once()
+        new_scheduler = ctx.bot_data["scheduler"]
+        assert new_scheduler is not None
+        assert new_scheduler is not existing
+        new_scheduler.stop()
+
+    async def test_stop(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        mock_scheduler = MagicMock()
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["off"])
+        ctx.bot_data["scheduler"] = mock_scheduler
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        mock_scheduler.stop.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "stopped" in text.lower()
+
+    async def test_stop_no_scheduler(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["off"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "stopped" in text.lower()
+
+    async def test_now_with_scheduler(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        mock_scheduler = MagicMock()
+        mock_scheduler._run_heartbeat = AsyncMock()
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["now"])
+        ctx.bot_data["scheduler"] = mock_scheduler
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Running" in text
+
+    async def test_now_no_scheduler(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["now"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No scheduler" in text
+
+    async def test_invalid_subcommand(self, sm_with_session):
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(sm_with_session, args=["bogus"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    async def test_start_no_session(self, session_manager):
+        """When no active session, should use home dir."""
+        from megobari.bot import cmd_heartbeat
+
+        update = _make_update()
+        ctx = _make_context(session_manager, args=["start"])
+        ctx.bot_data["scheduler"] = None
+        ctx.bot_data["config"] = None
+        await cmd_heartbeat(update, ctx)
+        scheduler = ctx.bot_data["scheduler"]
+        assert scheduler is not None
+        assert scheduler.running is True
+        scheduler.stop()
