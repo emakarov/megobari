@@ -1,8 +1,10 @@
 """Telegram bot application factory.
 
-All handler logic has been moved to megobari.handlers.*.
-This module re-exports handler names for backward compatibility
-and provides the create_application() factory.
+All handler logic lives in megobari.handlers.*.
+This module wires handlers via telegram_handler() adapter and provides
+the create_application() factory.
+
+Handler names are re-exported for backward compatibility with tests.
 """
 
 from __future__ import annotations
@@ -16,19 +18,16 @@ from megobari.config import Config
 from megobari.db import init_db
 
 # Re-export everything from handlers for backward compatibility.
-# This ensures `from megobari.bot import cmd_start` etc. keep working.
+# Tests do `from megobari.bot import cmd_start` etc.
 from megobari.handlers import (  # noqa: F401
     SessionUsage,
     StreamingAccumulator,
     _accumulate_usage,
     _busy_emoji,
     _busy_sessions,
-    _get_sm,
     _persist_usage,
     _process_prompt,
-    _reply,
     _send_typing_periodically,
-    _set_reaction,
     _track_user,
     cmd_autonomous,
     cmd_cd,
@@ -36,6 +35,7 @@ from megobari.handlers import (  # noqa: F401
     cmd_context,
     cmd_cron,
     cmd_current,
+    cmd_dashboard,
     cmd_delete,
     cmd_dirs,
     cmd_doctor,
@@ -46,7 +46,9 @@ from megobari.handlers import (  # noqa: F401
     cmd_history,
     cmd_mcp,
     cmd_memory,
+    cmd_migrate,
     cmd_model,
+    cmd_monitor,
     cmd_new,
     cmd_permissions,
     cmd_persona,
@@ -61,13 +63,13 @@ from megobari.handlers import (  # noqa: F401
     cmd_switch,
     cmd_think,
     cmd_usage,
-    fmt,
     handle_document,
     handle_message,
     handle_photo,
     handle_voice,
 )
 from megobari.session import SessionManager
+from megobari.telegram_transport import telegram_handler
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +77,14 @@ logger = logging.getLogger(__name__)
 # -- Application factory --
 
 
-async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Used when ALLOWED_USER_ID is not set — tells the user their numeric ID."""
+async def _cmd_discover_id(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Used when ALLOWED_USER_ID is not set — tells the user their ID."""
     user = update.effective_user
-    logger.info("User ID discovery: id=%s username=%s", user.id, user.username)
+    logger.info(
+        "User ID discovery: id=%s username=%s", user.id, user.username
+    )
     await update.message.reply_text(
         f"Your Telegram user ID is: {user.id}\n\n"
         f"Set this in your .env file as:\n"
@@ -87,8 +93,10 @@ async def _cmd_discover_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
-def create_application(session_manager: SessionManager, config: Config) -> Application:
-    """Create and configure the Telegram application with command handlers."""
+def create_application(
+    session_manager: SessionManager, config: Config
+) -> Application:
+    """Create and configure the Telegram application with handlers."""
     app = (
         Application.builder()
         .token(config.bot_token)
@@ -103,70 +111,111 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
     elif config.allowed_username is not None:
         user_filter = filters.User(username=config.allowed_username)
     else:
-        logger.warning("ALLOWED_USER not set — running in ID discovery mode.")
+        logger.warning(
+            "ALLOWED_USER not set — running in ID discovery mode."
+        )
         app.add_handler(MessageHandler(filters.ALL, _cmd_discover_id))
         return app
 
-    app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
-    app.add_handler(CommandHandler("new", cmd_new, filters=user_filter))
-    app.add_handler(CommandHandler("sessions", cmd_sessions, filters=user_filter))
-    app.add_handler(CommandHandler("switch", cmd_switch, filters=user_filter))
-    app.add_handler(CommandHandler("delete", cmd_delete, filters=user_filter))
-    app.add_handler(CommandHandler("rename", cmd_rename, filters=user_filter))
-    app.add_handler(CommandHandler("cd", cmd_cd, filters=user_filter))
-    app.add_handler(CommandHandler("dirs", cmd_dirs, filters=user_filter))
-    app.add_handler(CommandHandler("file", cmd_file, filters=user_filter))
-    app.add_handler(CommandHandler("help", cmd_help, filters=user_filter))
-    app.add_handler(CommandHandler("stream", cmd_stream, filters=user_filter))
-    app.add_handler(CommandHandler("permissions", cmd_permissions, filters=user_filter))
-    app.add_handler(CommandHandler("current", cmd_current, filters=user_filter))
-    app.add_handler(CommandHandler("restart", cmd_restart, filters=user_filter))
-    app.add_handler(CommandHandler("release", cmd_release, filters=user_filter))
-    app.add_handler(CommandHandler("persona", cmd_persona, filters=user_filter))
-    app.add_handler(CommandHandler("mcp", cmd_mcp, filters=user_filter))
-    app.add_handler(CommandHandler("skills", cmd_skills, filters=user_filter))
-    app.add_handler(CommandHandler("memory", cmd_memory, filters=user_filter))
-    app.add_handler(CommandHandler("summaries", cmd_summaries, filters=user_filter))
-    app.add_handler(CommandHandler("think", cmd_think, filters=user_filter))
-    app.add_handler(CommandHandler("effort", cmd_effort, filters=user_filter))
-    app.add_handler(CommandHandler("usage", cmd_usage, filters=user_filter))
-    app.add_handler(CommandHandler("compact", cmd_compact, filters=user_filter))
-    app.add_handler(CommandHandler("doctor", cmd_doctor, filters=user_filter))
-    app.add_handler(CommandHandler("model", cmd_model, filters=user_filter))
-    app.add_handler(CommandHandler("context", cmd_context, filters=user_filter))
-    app.add_handler(CommandHandler("history", cmd_history, filters=user_filter))
-    app.add_handler(CommandHandler("autonomous", cmd_autonomous, filters=user_filter))
-    app.add_handler(CommandHandler("cron", cmd_cron, filters=user_filter))
-    app.add_handler(CommandHandler("heartbeat", cmd_heartbeat, filters=user_filter))
+    # Wrap each TransportContext handler for python-telegram-bot dispatch.
+    _w = telegram_handler
+
+    _cmds = {
+        "start": cmd_start,
+        "new": cmd_new,
+        "sessions": cmd_sessions,
+        "switch": cmd_switch,
+        "delete": cmd_delete,
+        "rename": cmd_rename,
+        "cd": cmd_cd,
+        "dirs": cmd_dirs,
+        "file": cmd_file,
+        "help": cmd_help,
+        "stream": cmd_stream,
+        "permissions": cmd_permissions,
+        "current": cmd_current,
+        "restart": cmd_restart,
+        "release": cmd_release,
+        "persona": cmd_persona,
+        "mcp": cmd_mcp,
+        "skills": cmd_skills,
+        "memory": cmd_memory,
+        "summaries": cmd_summaries,
+        "think": cmd_think,
+        "effort": cmd_effort,
+        "usage": cmd_usage,
+        "compact": cmd_compact,
+        "doctor": cmd_doctor,
+        "migrate": cmd_migrate,
+        "model": cmd_model,
+        "context": cmd_context,
+        "history": cmd_history,
+        "autonomous": cmd_autonomous,
+        "cron": cmd_cron,
+        "heartbeat": cmd_heartbeat,
+        "monitor": cmd_monitor,
+        "dashboard": cmd_dashboard,
+    }
+
+    for name, handler in _cmds.items():
+        app.add_handler(
+            CommandHandler(name, _w(handler), filters=user_filter)
+        )
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & user_filter,
-            handle_message,
+            _w(handle_message),
         )
     )
     app.add_handler(
         MessageHandler(
             filters.VOICE & user_filter,
-            handle_voice,
+            _w(handle_voice),
         )
     )
     app.add_handler(
         MessageHandler(
             filters.PHOTO & user_filter,
-            handle_photo,
+            _w(handle_photo),
         )
     )
     app.add_handler(
         MessageHandler(
             filters.Document.ALL & user_filter,
-            handle_document,
+            _w(handle_document),
         )
     )
 
     async def _post_init(application: Application) -> None:
-        """Initialize DB and send restart notification."""
+        """Initialize DB, start dashboard, and send restart notification."""
         await init_db()
         logger.info("Database initialized at ~/.megobari/megobari.db")
+
+        # Store bot reference for scheduler access
+        application.bot_data["_bot"] = application.bot
+
+        # Start dashboard API server (optional)
+        if config.dashboard_port:
+            try:
+                from megobari.api.app import create_api, start_api_server
+
+                api = create_api(
+                    bot_data=application.bot_data,
+                    session_manager=session_manager,
+                )
+                await start_api_server(api, port=config.dashboard_port)
+                logger.info(
+                    "Dashboard API started on port %d",
+                    config.dashboard_port,
+                )
+            except ImportError:
+                logger.warning(
+                    "Dashboard dependencies not installed "
+                    "(pip install megobari[dashboard])"
+                )
+            except Exception:
+                logger.error("Failed to start dashboard API", exc_info=True)
 
         from megobari.actions import load_restart_marker
 
@@ -174,10 +223,18 @@ def create_application(session_manager: SessionManager, config: Config) -> Appli
         if chat_id:
             try:
                 await application.bot.send_message(
-                    chat_id=chat_id, text="✅ Bot restarted successfully."
+                    chat_id=chat_id,
+                    text="✅ Bot restarted successfully.",
                 )
             except Exception:
                 logger.warning("Failed to send restart notification")
+            try:
+                from megobari.summarizer import log_message
+
+                session_name = session_manager.current.name if session_manager.current else "main"
+                await log_message(session_name, "assistant", "✅ Bot restarted successfully.")
+            except Exception:
+                logger.debug("Failed to log restart message")
 
     app.post_init = _post_init
 
