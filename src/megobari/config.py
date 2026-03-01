@@ -31,6 +31,7 @@ class Config:
     working_dir: str = field(default_factory=os.getcwd)
     sessions_dir: Path | None = None
     whisper_model: str = "small"
+    dashboard_port: int = 8420
 
     def __post_init__(self):
         """Set default sessions_dir based on working_dir if not provided."""
@@ -47,6 +48,7 @@ class Config:
             allowed_user_id=user_id,
             allowed_username=username,
             working_dir=os.getcwd(),
+            dashboard_port=int(os.getenv("DASHBOARD_PORT", "8420")),
         )
 
     @classmethod
@@ -66,6 +68,7 @@ class Config:
             allowed_user_id=user_id,
             allowed_username=username,
             working_dir=cwd or env.working_dir,
+            dashboard_port=env.dashboard_port,
         )
 
     def validate(self) -> list[str]:

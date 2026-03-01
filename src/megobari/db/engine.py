@@ -130,25 +130,10 @@ async def init_db(url: str | None = None) -> AsyncEngine:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     else:
-        # Production: run Alembic migrations through our async engine
-        try:
-            async with _engine.begin() as conn:
-                await conn.run_sync(_run_migrations_on_connection)
-            logger.info("Database migrations applied successfully")
-        except Exception as exc:  # pragma: no cover
-            # If tables already exist but no alembic_version table,
-            # stamp the DB at head so future migrations work
-            if "already exists" in str(exc).lower():
-                logger.info("Existing DB without alembic_version — stamping at head")
-                async with _engine.begin() as conn:
-                    await conn.run_sync(_stamp_head_on_connection)
-            else:
-                logger.warning(
-                    "Alembic migration failed, falling back to create_all",
-                    exc_info=True,
-                )
-                async with _engine.begin() as conn:
-                    await conn.run_sync(Base.metadata.create_all)
+        # Production: run Alembic migrations (upgrade head)
+        async with _engine.begin() as conn:
+            await conn.run_sync(_run_migrations_on_connection)
+        logger.info("Database migrations applied successfully")
 
     return _engine
 

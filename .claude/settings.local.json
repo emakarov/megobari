@@ -7,7 +7,15 @@
       "WebSearch",
       "WebFetch(domain:electrobun.dev)",
       "WebFetch(domain:pypi.org)",
-      "Bash(python3 -m pip install:*)"
+      "Bash(python3 -m pip install:*)",
+      "Bash(git stash:*)",
+      "Bash(uv run:*)",
+      "Bash(git:*)",
+      "Bash(uv sync:*)",
+      "Bash(npx vite:*)",
+      "Bash(CLAUDECODE= uv run:*)",
+      "Bash(pgrep:*)",
+      "WebFetch(domain:developers.google.com)"
     ]
   }
 }

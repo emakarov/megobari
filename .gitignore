@@ -11,3 +11,5 @@ build/
 htmlcov/
 .pytest_cache/
 uv.lock
+*.db
+node_modules/

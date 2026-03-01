@@ -4,24 +4,22 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import ContextTypes
-
 from megobari.claude_bridge import send_to_claude
 from megobari.db import Repository, get_session
 from megobari.message_utils import split_message
+from megobari.transport import TransportContext
 
-from ._common import SessionUsage, _get_sm, _reply, fmt
+from ._common import SessionUsage
 
 logger = logging.getLogger(__name__)
 
 
-async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_usage(ctx: TransportContext) -> None:
     """Handle /usage command: show session and historical usage stats."""
-    sm = _get_sm(context)
+    fmt = ctx.formatter
+    sm = ctx.session_manager
     session = sm.current
-    args = context.args or []
+    args = ctx.args
 
     if args and args[0].lower() == "all":
         # Show all-time totals from DB
@@ -30,11 +28,11 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 repo = Repository(s)
                 total = await repo.get_total_usage()
         except Exception:
-            await _reply(update, "Failed to read usage from DB.")
+            await ctx.reply("Failed to read usage from DB.")
             return
 
         if total["query_count"] == 0:
-            await _reply(update, "No usage recorded yet.")
+            await ctx.reply("No usage recorded yet.")
             return
 
         duration_s = total["total_duration_ms"] / 1000
@@ -45,14 +43,14 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{fmt.bold('Sessions:')} {total['session_count']}",
             f"{fmt.bold('API time:')} {duration_s:.1f}s",
         ]
-        await _reply(update, "\n".join(lines), formatted=True)
+        await ctx.reply("\n".join(lines), formatted=True)
         return
 
     # Show current session usage — combine in-memory + DB historical
     lines = [f"{fmt.bold('Session:')} {fmt.escape(session.name)}"]
 
     # Current run (in-memory)
-    usage_map: dict[str, SessionUsage] = context.bot_data.get("usage", {})
+    usage_map: dict[str, SessionUsage] = ctx.bot_data.get("usage", {})
     su = usage_map.get(session.name)
 
     # Historical (DB)
@@ -80,23 +78,23 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"  API time: {duration_s:.1f}s")
 
     if (not su or su.message_count == 0) and (not db_usage or db_usage["query_count"] == 0):
-        await _reply(update, "No usage recorded yet for this session.")
+        await ctx.reply("No usage recorded yet for this session.")
         return
 
-    await _reply(update, "\n".join(lines), formatted=True)
+    await ctx.reply("\n".join(lines), formatted=True)
 
 
-async def cmd_compact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_compact(ctx: TransportContext) -> None:
     """Handle /compact command: summarize conversation and reset context."""
-    sm = _get_sm(context)
+    fmt = ctx.formatter
+    sm = ctx.session_manager
     session = sm.current
-    chat_id = update.effective_chat.id
 
     if not session.session_id:
-        await _reply(update, "No active context to compact.")
+        await ctx.reply("No active context to compact.")
         return
 
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await ctx.send_typing()
 
     # Ask Claude to summarize the conversation
     summary_prompt = (
@@ -134,7 +132,7 @@ async def cmd_compact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sm.update_session_id(session.name, new_session_id)
 
     # Save as a summary in DB
-    uid = update.effective_user.id if update.effective_user else None
+    uid = ctx.user_id or None
     try:
         async with get_session() as s:
             repo = Repository(s)
@@ -149,18 +147,22 @@ async def cmd_compact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception:
         logger.warning("Failed to save compact summary to DB")
 
-    compact_msg = f"📦 Context compacted.\n\n{fmt.bold('Summary:')}\n{fmt.escape(full_summary)}"
+    compact_msg = (
+        f"\U0001f4e6 Context compacted.\n\n"
+        f"{fmt.bold('Summary:')}\n{fmt.escape(full_summary)}"
+    )
     for chunk in split_message(compact_msg):
-        await _reply(update, chunk, formatted=True)
+        await ctx.reply(chunk, formatted=True)
 
 
-async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_context(ctx: TransportContext) -> None:
     """Handle /context command: show token usage for current session."""
-    sm = _get_sm(context)
+    fmt = ctx.formatter
+    sm = ctx.session_manager
     session = sm.current
 
     # In-memory (this run)
-    usage_map: dict[str, SessionUsage] = context.bot_data.get("usage", {})
+    usage_map: dict[str, SessionUsage] = ctx.bot_data.get("usage", {})
     su = usage_map.get(session.name)
 
     # DB history
@@ -202,14 +204,15 @@ async def cmd_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append(f"  Effort: {session.effort or 'default'}")
     lines.append(f"  Has context: {'yes' if session.session_id else 'no'}")
 
-    await _reply(update, "\n".join(lines), formatted=True)
+    await ctx.reply("\n".join(lines), formatted=True)
 
 
-async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_history(ctx: TransportContext) -> None:
     """Handle /history command: browse past conversations from DB."""
-    sm = _get_sm(context)
+    fmt = ctx.formatter
+    sm = ctx.session_manager
     session = sm.current
-    args = context.args or []
+    args = ctx.args
 
     if not args:
         # Show recent messages for current session
@@ -218,20 +221,20 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 repo = Repository(s)
                 msgs = await repo.get_recent_messages(session.name, limit=10)
         except Exception:
-            await _reply(update, "Failed to read history from DB.")
+            await ctx.reply("Failed to read history from DB.")
             return
 
         if not msgs:
-            await _reply(update, "No messages recorded for this session yet.")
+            await ctx.reply("No messages recorded for this session yet.")
             return
 
         lines = [fmt.bold(f"Recent messages ({session.name}):"), ""]
         for m in reversed(msgs):  # oldest first
             ts = m.created_at.strftime("%H:%M") if m.created_at else "?"
-            role_icon = "👤" if m.role == "user" else "🤖"
+            role_icon = "\U0001f464" if m.role == "user" else "\U0001f916"
             preview = m.content[:100] + ("..." if len(m.content) > 100 else "")
             lines.append(f"{role_icon} {ts} {fmt.escape(preview)}")
-        await _reply(update, "\n".join(lines), formatted=True)
+        await ctx.reply("\n".join(lines), formatted=True)
         return
 
     sub = args[0].lower()
@@ -252,20 +255,20 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 result = await s.execute(stmt)
                 msgs = list(result.scalars().all())
         except Exception:
-            await _reply(update, "Failed to read history from DB.")
+            await ctx.reply("Failed to read history from DB.")
             return
 
         if not msgs:
-            await _reply(update, "No messages recorded yet.")
+            await ctx.reply("No messages recorded yet.")
             return
 
         lines = [fmt.bold("Recent messages (all sessions):"), ""]
         for m in reversed(msgs):
             ts = m.created_at.strftime("%m-%d %H:%M") if m.created_at else "?"
-            role_icon = "👤" if m.role == "user" else "🤖"
+            role_icon = "\U0001f464" if m.role == "user" else "\U0001f916"
             preview = m.content[:80] + ("..." if len(m.content) > 80 else "")
             lines.append(f"{role_icon} {ts} [{m.session_name}] {fmt.escape(preview)}")
-        await _reply(update, "\n".join(lines), formatted=True)
+        await ctx.reply("\n".join(lines), formatted=True)
 
     elif sub == "search" and len(args) > 1:
         query_text = " ".join(args[1:])
@@ -284,20 +287,20 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 result = await s.execute(stmt)
                 msgs = list(result.scalars().all())
         except Exception:
-            await _reply(update, "Failed to search history.")
+            await ctx.reply("Failed to search history.")
             return
 
         if not msgs:
-            await _reply(update, f"No messages matching '{query_text}'.")
+            await ctx.reply(f"No messages matching '{query_text}'.")
             return
 
         lines = [fmt.bold(f"Search results for '{query_text}':"), ""]
         for m in reversed(msgs):
             ts = m.created_at.strftime("%m-%d %H:%M") if m.created_at else "?"
-            role_icon = "👤" if m.role == "user" else "🤖"
+            role_icon = "\U0001f464" if m.role == "user" else "\U0001f916"
             preview = m.content[:100] + ("..." if len(m.content) > 100 else "")
             lines.append(f"{role_icon} {ts} [{m.session_name}] {fmt.escape(preview)}")
-        await _reply(update, "\n".join(lines), formatted=True)
+        await ctx.reply("\n".join(lines), formatted=True)
 
     elif sub == "stats":
         try:
@@ -321,25 +324,24 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 result = await s.execute(stmt)
                 rows = result.all()
         except Exception:
-            await _reply(update, "Failed to read history stats.")
+            await ctx.reply("Failed to read history stats.")
             return
 
         if not rows:
-            await _reply(update, "No messages recorded yet.")
+            await ctx.reply("No messages recorded yet.")
             return
 
         lines = [fmt.bold("Message stats by session:"), ""]
         for row in rows:
-            marker = " ◂" if row.session_name == session.name else ""
+            marker = " \u25c2" if row.session_name == session.name else ""
             lines.append(f"  {fmt.escape(row.session_name)}: {row.cnt} messages{marker}")
-        await _reply(update, "\n".join(lines), formatted=True)
+        await ctx.reply("\n".join(lines), formatted=True)
 
     else:
-        await _reply(
-            update,
+        await ctx.reply(
             "Usage:\n"
-            "/history — recent messages for current session\n"
-            "/history all — recent across all sessions\n"
-            "/history search <query> — search message content\n"
-            "/history stats — message counts by session",
+            "/history \u2014 recent messages for current session\n"
+            "/history all \u2014 recent across all sessions\n"
+            "/history search <query> \u2014 search message content\n"
+            "/history stats \u2014 message counts by session",
         )

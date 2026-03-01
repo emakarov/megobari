@@ -3,11 +3,59 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from megobari.actions import execute_actions, parse_actions
+from megobari.formatting import TelegramFormatter
+
+# -- MockTransport helper --
+
+
+class MockTransport:
+    """Lightweight mock implementing TransportContext interface for tests."""
+
+    def __init__(self, chat_id=123, user_id=42):
+        self._chat_id = chat_id
+        self._user_id = user_id
+        self._formatter = TelegramFormatter()
+        self._bot_data = {}
+
+        # Mock all async methods
+        self.reply = AsyncMock(return_value=MagicMock())
+        self.reply_document = AsyncMock()
+        self.reply_photo = AsyncMock()
+        self.send_message = AsyncMock()
+        self.edit_message = AsyncMock()
+        self.delete_message = AsyncMock()
+        self.send_typing = AsyncMock()
+        self.set_reaction = AsyncMock()
+
+    @property
+    def chat_id(self):
+        return self._chat_id
+
+    @property
+    def user_id(self):
+        return self._user_id
+
+    @property
+    def bot_data(self):
+        return self._bot_data
+
+    @property
+    def formatter(self):
+        return self._formatter
+
+    @property
+    def transport_name(self):
+        return "test"
+
+    @property
+    def max_message_length(self):
+        return 4096
+
 
 # -- parse_actions tests --
 
@@ -139,52 +187,48 @@ class TestExecuteActions:
         f = tmp_path / "test.pdf"
         f.write_bytes(b"PDF content")
 
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_file", "path": str(f)}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        bot.send_document.assert_called_once()
-        call_kwargs = bot.send_document.call_args[1]
-        assert call_kwargs["chat_id"] == 123
-        assert call_kwargs["filename"] == "test.pdf"
+        ctx.reply_document.assert_called_once()
+        # reply_document(path, filename, caption=caption)
+        call_args = ctx.reply_document.call_args
+        assert call_args[0][1] == "test.pdf"  # filename is second positional arg
 
     @pytest.mark.asyncio
     async def test_send_file_with_caption(self, tmp_path):
         f = tmp_path / "report.pdf"
         f.write_bytes(b"data")
 
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_file", "path": str(f), "caption": "My report"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        call_kwargs = bot.send_document.call_args[1]
+        call_kwargs = ctx.reply_document.call_args[1]
         assert call_kwargs["caption"] == "My report"
 
     @pytest.mark.asyncio
     async def test_send_file_not_found(self):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_file", "path": "/nonexistent/file.pdf"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "not found" in errors[0]
-        bot.send_document.assert_not_called()
+        ctx.reply_document.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_file_missing_path(self):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_file"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "missing" in errors[0]
@@ -194,23 +238,21 @@ class TestExecuteActions:
         f = tmp_path / "test.pdf"
         f.write_bytes(b"data")
 
-        bot = AsyncMock()
-        bot.send_document.side_effect = Exception("Telegram error")
+        ctx = MockTransport()
+        ctx.reply_document.side_effect = Exception("Telegram error")
         errors = await execute_actions(
             [{"action": "send_file", "path": str(f)}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "failed" in errors[0]
 
     @pytest.mark.asyncio
     async def test_unknown_action_ignored(self):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "unknown_thing", "data": "x"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
 
@@ -221,22 +263,21 @@ class TestExecuteActions:
         f2 = tmp_path / "b.pdf"
         f2.write_bytes(b"b")
 
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [
                 {"action": "send_file", "path": str(f1)},
                 {"action": "send_file", "path": str(f2)},
             ],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        assert bot.send_document.call_count == 2
+        assert ctx.reply_document.call_count == 2
 
     @pytest.mark.asyncio
     async def test_empty_actions(self):
-        bot = AsyncMock()
-        errors = await execute_actions([], bot, chat_id=123)
+        ctx = MockTransport()
+        errors = await execute_actions([], ctx)
         assert errors == []
 
     @pytest.mark.asyncio
@@ -246,14 +287,13 @@ class TestExecuteActions:
 
         # Patch expanduser to resolve ~ to tmp_path
         monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / self.name)
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_file", "path": "~/home_file.txt"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        bot.send_document.assert_called_once()
+        ctx.reply_document.assert_called_once()
 
 
 class TestRestartAction:
@@ -263,17 +303,14 @@ class TestRestartAction:
         import megobari.actions as actions_mod
 
         actions_mod._RESTART_MARKER = tmp_path / "restart_notify.json"
-        bot = AsyncMock()
+        ctx = MockTransport(chat_id=123)
         errors = await execute_actions(
             [{"action": "restart"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        bot.send_message.assert_called_once()
-        call_kwargs = bot.send_message.call_args[1]
-        assert call_kwargs["chat_id"] == 123
-        assert "Restarting" in call_kwargs["text"]
+        ctx.send_message.assert_called_once()
+        assert "Restarting" in ctx.send_message.call_args[0][0]
         mock_restart.assert_called_once()
 
     @pytest.mark.asyncio
@@ -282,12 +319,11 @@ class TestRestartAction:
         import megobari.actions as actions_mod
 
         actions_mod._RESTART_MARKER = tmp_path / "restart_notify.json"
-        bot = AsyncMock()
-        bot.send_message.side_effect = Exception("network error")
+        ctx = MockTransport(chat_id=123)
+        ctx.send_message.side_effect = Exception("network error")
         errors = await execute_actions(
             [{"action": "restart"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
         mock_restart.assert_called_once()
@@ -301,11 +337,10 @@ class TestRestartAction:
 
         marker = tmp_path / "restart_notify.json"
         actions_mod._RESTART_MARKER = marker
-        bot = AsyncMock()
+        ctx = MockTransport(chat_id=42)
         await execute_actions(
             [{"action": "restart"}],
-            bot,
-            chat_id=42,
+            ctx,
         )
         # Marker should have been written before _do_restart
         assert marker.exists()
@@ -350,51 +385,45 @@ class TestSendPhotoAction:
         f = tmp_path / "image.png"
         f.write_bytes(b"PNG data")
 
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_photo", "path": str(f)}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        bot.send_photo.assert_called_once()
-        call_kwargs = bot.send_photo.call_args[1]
-        assert call_kwargs["chat_id"] == 123
+        ctx.reply_photo.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_photo_with_caption(self, tmp_path):
         f = tmp_path / "photo.jpg"
         f.write_bytes(b"JPEG data")
 
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_photo", "path": str(f), "caption": "Nice pic"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert errors == []
-        call_kwargs = bot.send_photo.call_args[1]
+        call_kwargs = ctx.reply_photo.call_args[1]
         assert call_kwargs["caption"] == "Nice pic"
 
     @pytest.mark.asyncio
     async def test_send_photo_not_found(self):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_photo", "path": "/nonexistent/image.png"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "not found" in errors[0]
-        bot.send_photo.assert_not_called()
+        ctx.reply_photo.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_photo_missing_path(self):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "send_photo"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "missing" in errors[0]
@@ -404,12 +433,11 @@ class TestSendPhotoAction:
         f = tmp_path / "photo.jpg"
         f.write_bytes(b"data")
 
-        bot = AsyncMock()
-        bot.send_photo.side_effect = Exception("Telegram error")
+        ctx = MockTransport()
+        ctx.reply_photo.side_effect = Exception("Telegram error")
         errors = await execute_actions(
             [{"action": "send_photo", "path": str(f)}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "failed" in errors[0]
@@ -444,11 +472,10 @@ async def _init_test_db():
 class TestMemorySetAction:
     @pytest.mark.asyncio
     async def test_memory_set_success(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
-            bot,
-            chat_id=123,
+            ctx,
             user_id=42,
         )
         assert errors == []
@@ -464,27 +491,26 @@ class TestMemorySetAction:
 
     @pytest.mark.asyncio
     async def test_memory_set_missing_fields(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang"}],
-            bot,
-            chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "requires" in errors[0]
 
     @pytest.mark.asyncio
     async def test_memory_set_upsert(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         # Set once
         await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "English"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         # Update
         await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
 
         from megobari.db import Repository, get_session
@@ -498,35 +524,35 @@ class TestMemorySetAction:
 class TestMemoryDeleteAction:
     @pytest.mark.asyncio
     async def test_memory_delete_success(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         # Set first
         await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         # Delete
         errors = await execute_actions(
             [{"action": "memory_delete", "category": "prefs", "key": "lang"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         assert errors == []
 
     @pytest.mark.asyncio
     async def test_memory_delete_not_found(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "memory_delete", "category": "prefs", "key": "nope"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         assert len(errors) == 1
         assert "not found" in errors[0]
 
     @pytest.mark.asyncio
     async def test_memory_delete_missing_fields(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "memory_delete", "category": "prefs"}],
-            bot, chat_id=123,
+            ctx,
         )
         assert len(errors) == 1
         assert "requires" in errors[0]
@@ -535,34 +561,34 @@ class TestMemoryDeleteAction:
 class TestMemoryListAction:
     @pytest.mark.asyncio
     async def test_memory_list_empty(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         errors = await execute_actions(
             [{"action": "memory_list"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         assert errors == []
-        bot.send_message.assert_called_once()
-        assert "No memories" in bot.send_message.call_args[1]["text"]
+        ctx.send_message.assert_called_once()
+        assert "No memories" in ctx.send_message.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_memory_list_with_data(self, _init_test_db):
-        bot = AsyncMock()
+        ctx = MockTransport()
         # Save some memories
         await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "lang", "value": "Georgian"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         await execute_actions(
             [{"action": "memory_set", "category": "prefs", "key": "theme", "value": "dark"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
-        bot.reset_mock()
+        ctx.send_message.reset_mock()
 
         errors = await execute_actions(
             [{"action": "memory_list", "category": "prefs"}],
-            bot, chat_id=123, user_id=42,
+            ctx, user_id=42,
         )
         assert errors == []
-        text = bot.send_message.call_args[1]["text"]
+        text = ctx.send_message.call_args[0][0]
         assert "lang" in text
         assert "theme" in text

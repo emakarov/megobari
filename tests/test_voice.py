@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from megobari.session import SessionManager
+from megobari.formatting import TelegramFormatter
 
 # -- Transcriber tests --
 
@@ -121,33 +122,83 @@ class TestCheckDependency:
 # -- Voice handler tests --
 
 
-def _make_context(session_manager: SessionManager, config=None):
-    """Create a mock telegram context."""
-    ctx = MagicMock()
-    ctx.bot_data = {"session_manager": session_manager}
-    if config:
-        ctx.bot_data["config"] = config
-    else:
-        ctx.bot_data["config"] = None
-    ctx.args = []
-    ctx.bot = AsyncMock()
-    return ctx
+class MockTransport:
+    """Lightweight mock implementing TransportContext interface for voice tests."""
 
+    def __init__(self, session_manager=None, bot_data=None):
+        self._session_manager = session_manager
+        self._formatter = TelegramFormatter()
+        self._bot_data = bot_data if bot_data is not None else {}
+        if session_manager and "session_manager" not in self._bot_data:
+            self._bot_data["session_manager"] = session_manager
 
-def _make_voice_update():
-    """Create a mock update with a voice message."""
-    update = MagicMock()
-    update.message = MagicMock()
-    update.message.reply_text = AsyncMock()
-    update.message.voice = MagicMock()
-    update.message.voice.get_file = AsyncMock()
-    update.message.text = None
-    update.effective_chat = MagicMock()
-    update.effective_chat.id = 12345
-    update.effective_user = MagicMock()
-    update.effective_user.id = 12345
-    update.message.message_id = 99
-    return update
+        self.reply = AsyncMock(return_value=MagicMock())
+        self.reply_document = AsyncMock()
+        self.reply_photo = AsyncMock()
+        self.send_message = AsyncMock()
+        self.edit_message = AsyncMock()
+        self.delete_message = AsyncMock()
+        self.send_typing = AsyncMock()
+        self.set_reaction = AsyncMock()
+        self.download_photo = AsyncMock(return_value=None)
+        self.download_document = AsyncMock(return_value=None)
+        self.download_voice = AsyncMock(return_value=None)
+
+    @property
+    def args(self):
+        return []
+
+    @property
+    def text(self):
+        return None
+
+    @property
+    def chat_id(self):
+        return 12345
+
+    @property
+    def message_id(self):
+        return 99
+
+    @property
+    def user_id(self):
+        return 12345
+
+    @property
+    def username(self):
+        return "testuser"
+
+    @property
+    def first_name(self):
+        return "Test"
+
+    @property
+    def last_name(self):
+        return "User"
+
+    @property
+    def caption(self):
+        return None
+
+    @property
+    def session_manager(self):
+        return self._session_manager
+
+    @property
+    def formatter(self):
+        return self._formatter
+
+    @property
+    def bot_data(self):
+        return self._bot_data
+
+    @property
+    def transport_name(self):
+        return "test"
+
+    @property
+    def max_message_length(self):
+        return 4096
 
 
 class TestHandleVoice:
@@ -159,58 +210,56 @@ class TestHandleVoice:
         self, mock_to_thread, mock_get_trans, mock_avail,
         mock_process, session_manager
     ):
-        from megobari.bot import handle_voice
         from megobari.config import Config
+        from megobari.handlers.claude import handle_voice
 
         mock_transcriber = MagicMock()
         mock_get_trans.return_value = mock_transcriber
         mock_to_thread.return_value = "Hello from voice"
 
-        update = _make_voice_update()
-        mock_file = AsyncMock()
-        update.message.voice.get_file.return_value = mock_file
-
         config = Config(bot_token="fake", whisper_model="tiny")
-        ctx = _make_context(session_manager, config=config)
+        ctx = MockTransport(
+            session_manager=session_manager,
+            bot_data={"session_manager": session_manager, "config": config},
+        )
+        ctx.download_voice.return_value = Path("/tmp/voice.ogg")
         session_manager.create("s")
 
-        await handle_voice(update, ctx)
+        await handle_voice(ctx)
 
         # Should show transcription
-        reply_calls = update.message.reply_text.call_args_list
+        reply_calls = ctx.reply.call_args_list
         any_transcription = any("Hello from voice" in str(c) for c in reply_calls)
         assert any_transcription
 
         # Should forward to _process_prompt with transcription
-        mock_process.assert_called_once_with("Hello from voice", update, ctx)
+        mock_process.assert_called_once_with("Hello from voice", ctx)
 
         # Reaction should be set and cleared
-        reaction_calls = ctx.bot.set_message_reaction.call_args_list
-        assert reaction_calls[0][1]["reaction"] == ["\U0001f440"]
-        assert reaction_calls[-1][1]["reaction"] == []
+        reaction_calls = ctx.set_reaction.call_args_list
+        assert reaction_calls[0][0][0] == "\U0001f440"
+        assert reaction_calls[-1][0][0] is None
 
     @patch("megobari.voice.is_available", return_value=False)
     async def test_voice_not_available(self, mock_avail, session_manager):
-        from megobari.bot import handle_voice
+        from megobari.handlers.claude import handle_voice
 
-        update = _make_voice_update()
-        ctx = _make_context(session_manager)
+        ctx = MockTransport(session_manager=session_manager)
 
-        await handle_voice(update, ctx)
+        await handle_voice(ctx)
 
-        text = update.message.reply_text.call_args[0][0]
+        text = ctx.reply.call_args[0][0]
         assert "faster-whisper" in text
 
     @patch("megobari.voice.is_available", return_value=True)
     async def test_voice_no_session(self, mock_avail, session_manager):
-        from megobari.bot import handle_voice
+        from megobari.handlers.claude import handle_voice
 
-        update = _make_voice_update()
-        ctx = _make_context(session_manager)
+        ctx = MockTransport(session_manager=session_manager)
 
-        await handle_voice(update, ctx)
+        await handle_voice(ctx)
 
-        text = update.message.reply_text.call_args[0][0]
+        text = ctx.reply.call_args[0][0]
         assert "No active session" in text
 
     @patch("megobari.handlers.claude._process_prompt", new_callable=AsyncMock)
@@ -221,24 +270,24 @@ class TestHandleVoice:
         self, mock_to_thread, mock_get_trans, mock_avail,
         mock_process, session_manager
     ):
-        from megobari.bot import handle_voice
         from megobari.config import Config
+        from megobari.handlers.claude import handle_voice
 
         mock_transcriber = MagicMock()
         mock_get_trans.return_value = mock_transcriber
         mock_to_thread.return_value = "   "
 
-        update = _make_voice_update()
-        mock_file = AsyncMock()
-        update.message.voice.get_file.return_value = mock_file
-
         config = Config(bot_token="fake")
-        ctx = _make_context(session_manager, config=config)
+        ctx = MockTransport(
+            session_manager=session_manager,
+            bot_data={"session_manager": session_manager, "config": config},
+        )
+        ctx.download_voice.return_value = Path("/tmp/voice.ogg")
         session_manager.create("s")
 
-        await handle_voice(update, ctx)
+        await handle_voice(ctx)
 
-        text = update.message.reply_text.call_args[0][0]
+        text = ctx.reply.call_args[0][0]
         assert "Could not transcribe" in text
         mock_process.assert_not_called()
 
@@ -250,21 +299,21 @@ class TestHandleVoice:
         self, mock_to_thread, mock_get_trans, mock_avail,
         mock_process, session_manager
     ):
-        from megobari.bot import handle_voice
         from megobari.config import Config
+        from megobari.handlers.claude import handle_voice
 
         mock_transcriber = MagicMock()
         mock_get_trans.return_value = mock_transcriber
         mock_to_thread.return_value = "test"
 
-        update = _make_voice_update()
-        mock_file = AsyncMock()
-        update.message.voice.get_file.return_value = mock_file
-
         config = Config(bot_token="fake", whisper_model="large-v3")
-        ctx = _make_context(session_manager, config=config)
+        ctx = MockTransport(
+            session_manager=session_manager,
+            bot_data={"session_manager": session_manager, "config": config},
+        )
+        ctx.download_voice.return_value = Path("/tmp/voice.ogg")
         session_manager.create("s")
 
-        await handle_voice(update, ctx)
+        await handle_voice(ctx)
 
         mock_get_trans.assert_called_with("large-v3")

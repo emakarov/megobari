@@ -21,6 +21,8 @@ _USAGE = (
     "/monitor resource list|add|remove [entity]\n"
     "/monitor subscribe <target> <channel> [config]\n"
     "/monitor check [topic] [entity]\n"
+    "/monitor baseline [topic] \u2014 generate initial digests\n"
+    "/monitor report [topic] \u2014 generate full report\n"
     "/monitor digest [topic|entity]"
 )
 
@@ -45,6 +47,10 @@ async def cmd_monitor(ctx: TransportContext) -> None:
         await _handle_subscribe(ctx, args[1:])
     elif sub == "check":
         await _handle_check(ctx, args[1:])
+    elif sub == "baseline":
+        await _handle_baseline(ctx, args[1:])
+    elif sub == "report":
+        await _handle_report(ctx, args[1:])
     elif sub == "digest":
         await _handle_digest(ctx, args[1:])
     else:
@@ -484,6 +490,66 @@ async def _handle_check(ctx: TransportContext, args: list[str]) -> None:
     except Exception:
         logger.exception("Monitor check failed")
         await ctx.reply("Monitor check failed.")
+
+
+async def _handle_baseline(ctx: TransportContext, args: list[str]) -> None:
+    """Handle /monitor baseline [topic] — generate initial digests."""
+    from megobari.monitor import generate_baseline_digests
+
+    topic_name = args[0] if args else None
+
+    await ctx.reply("\U0001f4cb Generating baseline digests...")
+
+    try:
+        digests = await generate_baseline_digests(topic_name=topic_name)
+        if not digests:
+            await ctx.reply("No new baseline digests to generate.")
+            return
+
+        # Group by entity
+        by_entity: dict[str, list[dict]] = {}
+        for d in digests:
+            ename = d.get("entity_name", "Unknown")
+            by_entity.setdefault(ename, []).append(d)
+
+        fmt = ctx.formatter
+        lines = [
+            fmt.bold(f"Baseline Digests: {len(digests)} summaries"),
+            "",
+        ]
+        for entity_name, entity_digests in by_entity.items():
+            lines.append(f"\U0001f3e2 {fmt.bold(fmt.escape(entity_name))}")
+            for d in entity_digests:
+                lines.append(
+                    f"  \U0001f4cb {d['resource_name']}: "
+                    f"{fmt.escape(d['summary'])}"
+                )
+            lines.append("")
+
+        await ctx.reply("\n".join(lines), formatted=True)
+    except Exception:
+        logger.exception("Baseline digest generation failed")
+        await ctx.reply("Baseline digest generation failed.")
+
+
+async def _handle_report(ctx: TransportContext, args: list[str]) -> None:
+    """Handle /monitor report [topic] — generate and save a full report."""
+    from megobari.monitor import generate_report
+
+    topic_name = args[0] if args else None
+
+    await ctx.reply("\U0001f4ca Generating market intelligence report...")
+
+    try:
+        report = await generate_report(topic_name=topic_name)
+        # Send first ~3500 chars (Telegram message limit ~4096)
+        preview = report[:3500]
+        if len(report) > 3500:
+            preview += "\n\n... (full report available in dashboard)"
+        await ctx.reply(preview)
+    except Exception:
+        logger.exception("Report generation failed")
+        await ctx.reply("Report generation failed.")
 
 
 async def _handle_digest(ctx: TransportContext, args: list[str]) -> None:

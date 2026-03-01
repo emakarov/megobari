@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import PlainTextResponse
 
 from megobari.db import Repository, get_session
 
@@ -93,7 +94,7 @@ async def list_digests(
     entity_id: int | None = Query(None),
     limit: int = Query(50),
 ) -> list[dict]:
-    """List latest monitor digests."""
+    """List latest monitor digests with entity/resource names."""
     async with get_session() as s:
         repo = Repository(s)
         digests = await repo.list_monitor_digests(
@@ -101,6 +102,27 @@ async def list_digests(
             entity_id=entity_id,
             limit=limit,
         )
+
+        # Build lookup maps for entity and resource names
+        entity_ids = {d.entity_id for d in digests}
+        resource_ids = {d.resource_id for d in digests}
+
+        entity_info: dict[int, tuple[str, str]] = {}  # id -> (name, url)
+        # id -> (name, type, url)
+        resource_info: dict[int, tuple[str, str, str]] = {}
+
+        for eid in entity_ids:
+            entities = await repo.list_monitor_entities()
+            for e in entities:
+                entity_info[e.id] = (e.name, e.url or "")
+            break  # only need one full fetch
+
+        for rid in resource_ids:
+            resources = await repo.list_monitor_resources()
+            for r in resources:
+                resource_info[r.id] = (r.name, r.resource_type, r.url)
+            break
+
     return [
         {
             "id": d.id,
@@ -111,6 +133,25 @@ async def list_digests(
             "summary": d.summary,
             "change_type": d.change_type,
             "created_at": d.created_at.isoformat(),
+            "entity_name": entity_info.get(d.entity_id, ("", ""))[0],
+            "entity_url": entity_info.get(d.entity_id, ("", ""))[1],
+            "resource_name": resource_info.get(d.resource_id, ("", "", ""))[0],
+            "resource_type": resource_info.get(d.resource_id, ("", "", ""))[1],
+            "resource_url": resource_info.get(d.resource_id, ("", "", ""))[2],
         }
         for d in digests
     ]
+
+
+@router.get("/monitor/report", response_class=PlainTextResponse)
+async def get_report(
+    request: Request,
+    topic: str | None = Query(None),
+) -> str:
+    """Serve a previously generated report from disk."""
+    from megobari.monitor import load_report
+
+    report = load_report(topic_name=topic)
+    if report is None:
+        return "No report available. Generate one with /monitor report [topic]."
+    return report

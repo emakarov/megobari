@@ -8,6 +8,10 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from megobari.transport import TransportContext
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +61,8 @@ def parse_actions(text: str) -> tuple[str, list[dict]]:
 
 async def execute_actions(
     actions: list[dict],
-    bot,
-    chat_id: int,
+    ctx: TransportContext,
+    *,
     user_id: int | None = None,
 ) -> list[str]:
     """Execute a list of parsed actions.
@@ -71,15 +75,15 @@ async def execute_actions(
         action_type = action.get("action")
 
         if action_type == "send_file":
-            err = await _action_send_file(action, bot, chat_id)
+            err = await _action_send_file(action, ctx)
             if err:
                 errors.append(err)
         elif action_type == "send_photo":
-            err = await _action_send_photo(action, bot, chat_id)
+            err = await _action_send_photo(action, ctx)
             if err:
                 errors.append(err)
         elif action_type == "restart":
-            await _action_restart(bot, chat_id)
+            await _action_restart(ctx)
         elif action_type == "memory_set":
             err = await _action_memory_set(action, user_id)
             if err:
@@ -89,7 +93,7 @@ async def execute_actions(
             if err:
                 errors.append(err)
         elif action_type == "memory_list":
-            result = await _action_memory_list(action, bot, chat_id, user_id)
+            result = await _action_memory_list(action, ctx, user_id)
             if result:
                 errors.append(result)
         else:
@@ -98,7 +102,9 @@ async def execute_actions(
     return errors
 
 
-async def _action_send_file(action: dict, bot, chat_id: int) -> str | None:
+async def _action_send_file(
+    action: dict, ctx: TransportContext
+) -> str | None:
     """Execute a send_file action. Returns error string or None."""
     raw_path = action.get("path")
     if not raw_path:
@@ -111,18 +117,18 @@ async def _action_send_file(action: dict, bot, chat_id: int) -> str | None:
     caption = action.get("caption")
 
     try:
-        with open(resolved, "rb") as f:
-            kwargs: dict = {"document": f, "filename": resolved.name}
-            if caption:
-                kwargs["caption"] = caption
-            await bot.send_document(chat_id=chat_id, **kwargs)
+        await ctx.reply_document(
+            resolved, resolved.name, caption=caption
+        )
     except Exception as e:
         return f"send_file: failed to send {resolved.name}: {e}"
 
     return None
 
 
-async def _action_send_photo(action: dict, bot, chat_id: int) -> str | None:
+async def _action_send_photo(
+    action: dict, ctx: TransportContext
+) -> str | None:
     """Execute a send_photo action. Returns error string or None."""
     raw_path = action.get("path")
     if not raw_path:
@@ -135,11 +141,7 @@ async def _action_send_photo(action: dict, bot, chat_id: int) -> str | None:
     caption = action.get("caption")
 
     try:
-        with open(resolved, "rb") as f:
-            kwargs: dict = {"photo": f}
-            if caption:
-                kwargs["caption"] = caption
-            await bot.send_photo(chat_id=chat_id, **kwargs)
+        await ctx.reply_photo(resolved, caption=caption)
     except Exception as e:
         return f"send_photo: failed to send {resolved.name}: {e}"
 
@@ -203,7 +205,7 @@ async def _action_memory_delete(action: dict, user_id: int | None) -> str | None
 
 
 async def _action_memory_list(
-    action: dict, bot, chat_id: int, user_id: int | None
+    action: dict, ctx: TransportContext, user_id: int | None
 ) -> str | None:
     """List memories and send to chat. Returns error string or None."""
     category = action.get("category")
@@ -216,14 +218,12 @@ async def _action_memory_list(
                 user_id=user_id, category=category
             )
         if not memories:
-            await bot.send_message(chat_id=chat_id, text="📭 No memories found.")
+            await ctx.send_message("📭 No memories found.")
         else:
             lines = []
             for m in memories:
                 lines.append(f"• **{m.category}/{m.key}**: {m.content}")
-            await bot.send_message(
-                chat_id=chat_id, text="\n".join(lines)
-            )
+            await ctx.send_message("\n".join(lines))
     except Exception as e:
         logger.warning("memory_list failed: %s", e)
         return f"memory_list: {e}"
@@ -233,7 +233,7 @@ async def _action_memory_list(
 _RESTART_MARKER = Path(".megobari") / "restart_notify.json"
 
 
-def save_restart_marker(chat_id: int) -> None:
+def save_restart_marker(chat_id: int | str) -> None:
     """Save chat_id so the bot can notify after restart."""
     _RESTART_MARKER.parent.mkdir(parents=True, exist_ok=True)
     _RESTART_MARKER.write_text(json.dumps({"chat_id": chat_id}))
@@ -259,12 +259,20 @@ def load_restart_marker() -> int | None:
         return None
 
 
-async def _action_restart(bot, chat_id: int) -> None:
+async def _action_restart(ctx: TransportContext) -> None:
     """Restart the bot process via os.execv."""
     logger.info("Restart action triggered — restarting bot process")
-    save_restart_marker(chat_id)
+    save_restart_marker(ctx.chat_id)
     try:
-        await bot.send_message(chat_id=chat_id, text="🔄 Restarting...")
+        await ctx.send_message("🔄 Restarting...")
+    except Exception:
+        pass
+    try:
+        from megobari.summarizer import log_message
+
+        await log_message(
+            ctx.session_manager.current.name, "assistant", "🔄 Restarting..."
+        )
     except Exception:
         pass
     _do_restart()

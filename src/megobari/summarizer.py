@@ -165,15 +165,32 @@ async def log_message(
     content: str,
     user_id: int | None = None,
 ) -> None:
-    """Log a message to the database."""
+    """Log a message to the database and broadcast to dashboard."""
     try:
         async with get_session() as s:
             repo = Repository(s)
-            await repo.add_message(
+            msg = await repo.add_message(
                 session_name=session_name,
                 role=role,
                 content=content,
                 user_id=user_id,
             )
+        # Notify dashboard WebSocket subscribers
+        try:
+            from megobari.api.pubsub import MessageEvent, message_bus
+
+            message_bus.publish(
+                MessageEvent(
+                    id=msg.id,
+                    session_name=msg.session_name,
+                    role=msg.role,
+                    content=msg.content,
+                    created_at=msg.created_at.isoformat() + "Z"
+                    if msg.created_at.tzinfo is None
+                    else msg.created_at.isoformat(),
+                )
+            )
+        except Exception:
+            pass  # Dashboard not loaded or no subscribers
     except Exception:
         logger.debug("Failed to log message", exc_info=True)
